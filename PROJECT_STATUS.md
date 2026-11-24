@@ -3,6 +3,7 @@
 ## 已完成
 
 - 建立仓库结构、协作说明和 Git 忽略规则。
+- 将课程要求 PDF 和原始报告模板纳入版本管理。
 
 ## 未完成
 
@@ -15,11 +16,13 @@
 
 ## 最近修改文件
 
-- README.md、AGENTS.md、.gitignore、PROJECT_STATUS.md
+- README.md、.gitignore、PROJECT_STATUS.md
+- 作业要求/数字认证实验2026.pdf、作业要求/系统设计与开发报告-报告模板.doc
 
 ## 已确认设计决策
 
 - 使用 `main` 作为默认分支，通过 Pull Request 协作。
+- GitHub 仓库采用公开可见性，课程要求和报告模板随仓库维护。
 
 ## 后续计划
 
