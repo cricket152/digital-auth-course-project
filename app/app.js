@@ -43,22 +43,37 @@ const navigation = [...document.querySelectorAll('[data-nav]')];
 const pages = [...document.querySelectorAll('[data-page]')];
 const layoutKey = 'course-client-layout';
 const clientSlots = new Map();
+const clientHeading = document.querySelector('#client-heading');
+const addClientButton = document.querySelector('#add-client');
+const clientLinks = document.querySelector('#client-links');
+let selectedClient;
 
 function showPage() {
   const fragment = location.hash.slice(1);
-  const page = pages.some(({ id }) => id === fragment) ? fragment : 'start';
+  const clientRoute = /^client-(\d+)$/.exec(fragment);
+  const clientPage = fragment === 'clients' || Boolean(clientRoute);
+  const page = clientPage ? 'clients' : pages.some(({ id }) => id === fragment) ? fragment : 'start';
+  if (clientPage) {
+    const requested = Number(clientRoute?.[1]);
+    if (clientSlots.has(requested)) selectedClient = requested;
+    if (!clientSlots.has(selectedClient)) selectedClient = clientSlots.keys().next().value;
+    const destination = selectedClient === undefined ? 'clients' : 'client-' + selectedClient;
+    if (fragment !== destination) history.replaceState(history.state, '', '#' + destination);
+    clientHeading.textContent = clientSlots.get(selectedClient)?.link.textContent ?? '客户端与聊天';
+  }
   for (const section of pages) section.hidden = section.id !== page;
-  for (const link of navigation) {
-    if (link.dataset.nav === page) link.setAttribute('aria-current', 'page');
+  const activeNav = clientPage ? clientSlots.get(selectedClient)?.link.dataset.nav : page;
+  for (const link of [...navigation, ...clientLinks.children]) {
+    if (link.dataset.nav === activeNav) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   }
+  for (const [id, client] of clientSlots) client.panel.hidden = !clientPage || id !== selectedClient;
 }
 
 window.addEventListener('hashchange', () => {
   showPage();
   window.scrollTo(0, 0);
 });
-showPage();
 
 function formatTime(date) {
   return date ? new Date(date).toLocaleString('zh-CN') : '';
@@ -177,8 +192,12 @@ function createMember(number) {
   const panel = document.querySelector('#member-template').content.firstElementChild.cloneNode(true);
   const query = (selector) => panel.querySelector(selector);
   panel.dataset.panel = String(number);
-  query('.lane-title').textContent = '客户端 ' + number;
-  query('.close-client').setAttribute('aria-label', '关闭客户端 ' + number);
+  const defaultTitle = '客户端 ' + number;
+  const link = document.createElement('a');
+  link.dataset.nav = 'client-' + number;
+  link.href = '#' + link.dataset.nav;
+  link.textContent = defaultTitle;
+  clientLinks.append(link);
   document.querySelector('#members').append(panel);
 
   const certificateInfo = query('.certificate-info');
@@ -186,6 +205,15 @@ function createMember(number) {
   const history = query('.revoked-history');
   const auth = query('.auth');
   const form = query('.message-form');
+  const negotiate = query('.negotiate');
+  const testIntegrity = query('.test-integrity');
+  const secureStatus = query('.secure-status');
+  const secureSessions = query('.secure-sessions');
+  const secureList = query('.secure-session-list');
+  const secureTemplate = query('.secure-session-template');
+  const secureRows = new Map();
+  let securePeers = {};
+  let busySecure = false;
   const notice = query('.notice');
   const content = query('.member-content');
   const identity = query('.identity');
@@ -201,19 +229,77 @@ function createMember(number) {
     else sessionStorage.removeItem(storageKey);
   }
 
+  function renderSecure() {
+    const to = form.elements.to.value;
+    const session = to && Object.hasOwn(securePeers, to) ? securePeers[to] : undefined;
+    const ready = session?.phase === 'ready';
+    negotiate.disabled = busySecure || form.elements.to.disabled || !to || Boolean(session);
+    testIntegrity.disabled = busySecure || !ready;
+    form.elements.text.disabled = !ready;
+    form.querySelector('[type="submit"]').disabled = !ready;
+    const status = ready ? '发给 ' + to + ' · AES-256-GCM 已启用'
+      : session ? '正在与 ' + to + ' 协商会话密钥'
+        : to ? '请先与 ' + to + ' 协商会话密钥' : '等待选择在线收件人';
+    if (secureStatus.textContent !== status) secureStatus.textContent = status;
+  }
+
+  function renderSecureSessions() {
+    for (const [peer, row] of secureRows) {
+      if (!Object.hasOwn(securePeers, peer)) {
+        row.remove();
+        secureRows.delete(peer);
+      }
+    }
+    for (const [peer, session] of Object.entries(securePeers)) {
+      let row = secureRows.get(peer);
+      if (!row) {
+        row = secureTemplate.content.firstElementChild.cloneNode(true);
+        row.querySelector('strong').textContent = peer;
+        secureRows.set(peer, row);
+        secureList.append(row);
+      }
+      const counters = session.phase === 'ready'
+        ? '成功解密 ' + session.received + ' 条 · 完整性拒绝 ' + session.rejected + ' 条'
+        : '正在协商';
+      const summary = row.querySelector('summary span');
+      if (summary.textContent !== counters) summary.textContent = counters;
+      const transcript = session.transcript ?? '';
+      if (row.dataset.id !== session.id || row.dataset.transcript !== transcript) {
+        row.dataset.id = session.id;
+        row.dataset.transcript = transcript;
+        writeDetails(row.querySelector('dl'), {
+          会话编号: session.id,
+          对端证书指纹: session.peerFingerprint,
+          协商记录摘要: session.transcript,
+          临时密钥与派生: 'X25519 / HKDF-SHA256',
+        });
+      }
+    }
+    secureSessions.hidden = secureRows.size === 0;
+  }
+
+  function renderIdentity(username = '') {
+    name = username;
+    const title = username || defaultTitle;
+    const status = username ? '已登录' : '未登录';
+    if (link.textContent !== title) link.textContent = title;
+    if (identity.textContent !== status) identity.textContent = status;
+    if (!panel.hidden && clientHeading.textContent !== title) clientHeading.textContent = title;
+  }
+
   function render(data) {
     auth.hidden = Boolean(data);
     content.hidden = !data;
-    identity.textContent = data?.account.username ?? '未登录';
+    renderIdentity(data?.account.username);
     if (!data) {
-      name = '';
       draftId = '';
+      securePeers = {};
+      renderSecureSessions();
       certificateInfo.open = false;
       renderCrypto(null, '');
       renderRevoked(history, [], '');
       return;
     }
-    name = data.account.username;
     const certificate = data.certificate;
     const draft = data.draft;
     draftId = draft?.id ?? '';
@@ -271,9 +357,10 @@ function createMember(number) {
       else if (data.peers.length === 1) peers.value = data.peers[0];
       peers.dataset.options = JSON.stringify(data.peers);
     }
-    for (const control of form.querySelectorAll('select, input, button')) {
-      control.disabled = data.chat.phase !== 'online' || data.peers.length === 0;
-    }
+    securePeers = data.chat.secure;
+    peers.disabled = data.chat.phase !== 'online' || data.peers.length === 0;
+    renderSecure();
+    renderSecureSessions();
     const list = query('.messages');
     const items = JSON.stringify(data.chat.messages);
     if (list.dataset.items !== items) {
@@ -287,6 +374,13 @@ function createMember(number) {
         const content = document.createElement('span');
         content.textContent = message.text;
         item.append(participant, content);
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = '查看密文片段 · 序号 ' + message.sequence;
+        const ciphertext = document.createElement('code');
+        ciphertext.textContent = message.ciphertextPreview;
+        details.append(summary, ciphertext);
+        item.append(details);
         return item;
       }));
       list.scrollTop = list.scrollHeight;
@@ -346,7 +440,7 @@ function createMember(number) {
         throw new Error('请在管理员审批区域登录。');
       }
       remember(result.token);
-      name = result.account.username;
+      renderIdentity(result.account.username);
       auth.reset();
       await refresh();
     } catch (error) {
@@ -394,6 +488,21 @@ function createMember(number) {
       showNotice(notice);
     }
   });
+  form.elements.to.addEventListener('change', renderSecure);
+  for (const [button, route] of [[negotiate, 'negotiate'], [testIntegrity, 'test-integrity']]) {
+    button.addEventListener('click', async () => {
+      busySecure = true;
+      renderSecure();
+      try {
+        if (await action(route, { to: form.elements.to.value }) && route === 'test-integrity') {
+          showNotice(notice, '已发送篡改测试包，请在对端核对完整性校验结果。');
+        }
+      } finally {
+        busySecure = false;
+        renderSecure();
+      }
+    });
+  }
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const body = Object.fromEntries(new FormData(form));
@@ -411,13 +520,16 @@ function createMember(number) {
         return;
       }
     }
+    const wasVisible = !panel.hidden;
     remember('');
     clientSlots.delete(number);
     panel.remove();
+    link.remove();
     saveLayout();
-    document.querySelector('#add-client').focus();
+    showPage();
+    if (wasVisible) (clientSlots.get(selectedClient)?.link ?? addClientButton).focus();
   });
-  return { refresh, name: () => name, focus: () => query('.auth input').focus() };
+  return { panel, link, refresh, name: () => name, focus: () => query('.auth input').focus() };
 }
 
 const eventTitles = {
@@ -428,7 +540,8 @@ const eventTitles = {
   tls_established: '完成 TLS 握手',
   tls_rejected: '拒绝 TLS 握手',
   websocket_admission: '聊天接入检查',
-  message_relayed: '转发消息',
+  session_relayed: '转发密钥协商帧',
+  message_relayed: '转发密文',
 };
 const evidenceFilter = document.querySelector('#evidence-filter');
 const evidenceTimeline = document.querySelector('#evidence-timeline');
@@ -443,7 +556,7 @@ function updateTimeline() {
     if (!term) return true;
     if (/^#\d+$/.test(term)) return [event.connection, event.recipientConnection].map(String).includes(term.slice(1));
     return [event.user, event.from, event.to, event.requestId, event.recipientRequestId, event.fingerprint,
-      event.recipientFingerprint, event.stage, eventTitles[event.stage], event.result, event.code]
+      event.recipientFingerprint, event.sessionId, event.stage, eventTitles[event.stage], event.result, event.code]
       .some((value) => value?.toLowerCase().includes(term));
   });
   document.querySelector('#evidence-count').textContent = '显示 ' + matching.length + ' 条，共 ' + records.length + ' 条';
@@ -460,7 +573,7 @@ function updateTimeline() {
     header.append(title, time);
     const detail = document.createElement('dl');
     writeDetails(detail, {
-      账号: event.stage === 'message_relayed' ? event.from + ' → ' + event.to : event.user,
+      账号: event.from ? event.from + ' → ' + event.to : event.user,
       操作人: event.admin,
       申请编号: event.requestId,
       收件人申请编号: event.recipientRequestId,
@@ -471,7 +584,11 @@ function updateTimeline() {
       收件人连接: event.recipientConnection && '#' + event.recipientConnection,
       'TLS 参数': [event.protocol, event.cipher].filter(Boolean).join(' · '),
       结果: event.status ? 'HTTP ' + event.status + ' · ' + event.result : event.code,
-      消息大小: event.bytes && event.bytes + ' 字节',
+      会话编号: event.sessionId,
+      协商帧: { offer: '签名公钥发起', answer: '签名公钥应答', confirm: '密钥确认' }[event.frameKind],
+      密文序号: event.sequence,
+      密文片段: event.ciphertextPreview,
+      转发帧大小: event.bytes && event.bytes + ' 字节',
     });
     item.append(header, detail);
     return item;
@@ -695,7 +812,6 @@ let nextClient = saved.next;
 
 function saveLayout() {
   sessionStorage.setItem(layoutKey, JSON.stringify({ ids: [...clientSlots.keys()], next: nextClient }));
-  document.querySelector('#client-count').textContent = String(clientSlots.size);
   document.querySelector('#empty-clients').hidden = clientSlots.size !== 0;
 }
 
@@ -708,9 +824,12 @@ function addClient(number) {
 
 for (const number of saved.ids) addClient(number);
 saveLayout();
-document.querySelector('#add-client').addEventListener('click', () => {
+showPage();
+addClientButton.addEventListener('click', () => {
   const client = addClient(nextClient++);
   saveLayout();
+  location.hash = client.link.hash;
+  showPage();
   client.focus();
 });
 
@@ -719,7 +838,7 @@ document.querySelector('#start-experiment').addEventListener('click', () => {
   saveLayout();
   location.hash = 'clients';
   showPage();
-  document.querySelector('#client-heading').focus({ preventScroll: true });
+  clientHeading.focus({ preventScroll: true });
 });
 
 const refreshAdmin = createAdmin();

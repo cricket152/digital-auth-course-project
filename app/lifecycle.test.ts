@@ -6,8 +6,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { openSecureSessions } from './secure-session.ts';
+import type { SecureFrame } from './chat-wire.ts';
 
-test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout: 25_000 }, async (t) => {
+test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { timeout: 25_000 }, async (t) => {
   const base = resolve('.prototype');
   mkdirSync(base, { recursive: true });
   const runtime = mkdtempSync(join(base, 'course-test-'));
@@ -104,15 +106,71 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   assert.equal(signedDetails.certificate.caSignatureVerified, true);
   assert.equal(signedDetails.certificate.samePublicKey, true);
   assert.equal(signedDetails.certificate.keyFingerprint, draftDetails.request.keyFingerprint);
+  await t.test('端点拒绝伪造协商签名、对端错配和密文重放', async (caseContext) => {
+    const frames: SecureFrame[] = [];
+    const ca = readFileSync(join(runtime, 'ca', 'ca.crt'));
+    const pemA = await api('certificate', alice.token);
+    const pemB = await api('certificate', bob.token);
+    const a = openSecureSessions('alice', pemA, readFileSync(join(runtime, 'clients', requestA.id + '.key')), ca,
+      (_to, frame) => frames.push(frame));
+    const b = openSecureSessions('bob', pemB, readFileSync(join(runtime, 'clients', requestB.id + '.key')), ca,
+      (_to, frame) => frames.push(frame));
+    caseContext.after(() => {
+      a.close();
+      b.close();
+    });
+    a.start('bob');
+    const offer = frames.shift()!;
+    assert.equal(offer.kind, 'offer');
+    assert.throws(() => b.receive('alice', offer, pemB), /证书校验失败/);
+    const brokenSignature = Buffer.from(offer.signature, 'base64url');
+    brokenSignature.writeUInt8(brokenSignature.readUInt8(0) ^ 1);
+    assert.throws(() => b.receive('alice', { ...offer, signature: brokenSignature.toString('base64url') }, pemA), /签名无效/);
+    b.receive('alice', offer, pemA);
+    const answer = frames.shift()!;
+    assert.equal(answer.kind, 'answer');
+    const brokenTag = Buffer.from(answer.tag, 'base64url');
+    brokenTag.writeUInt8(brokenTag.readUInt8(0) ^ 1);
+    assert.throws(() => a.receive('bob', { ...answer, tag: brokenTag.toString('base64url') }, pemB));
+    assert.equal(a.view().bob?.phase, 'offered');
+    a.receive('bob', answer, pemB);
+    assert.equal(b.view().alice?.phase, 'answering');
+    b.receive('alice', frames.shift()!);
+    assert.equal(b.view().alice?.phase, 'ready');
+    a.send('bob', '仅对端解密');
+    const encrypted = frames.shift()!;
+    assert.equal(encrypted.kind, 'ciphertext');
+    assert(!JSON.stringify(encrypted).includes('仅对端解密'));
+    assert.equal(b.receive('alice', encrypted), '仅对端解密');
+    assert.throws(() => b.receive('alice', encrypted), /完整性校验失败/);
+  });
   await api('connect', alice.token, {});
   await api('connect', bob.token, {});
   const stateA = () => api('state', alice.token);
   const stateB = () => api('state', bob.token);
   await until(stateA, (state) => state.chat.phase === 'online' && state.peers.includes('bob'));
   await until(stateB, (state) => state.chat.phase === 'online' && state.peers.includes('alice'));
+  await api('send', alice.token, { to: 'bob', text: '未协商不得发送' }, 409);
+  await Promise.all([
+    api('negotiate', alice.token, { to: 'bob' }),
+    api('negotiate', bob.token, { to: 'alice' }),
+  ]);
+  const agreedA = (await until(stateA, (state) => state.chat.secure.bob?.phase === 'ready')).chat.secure.bob;
+  const agreedB = (await until(stateB, (state) => state.chat.secure.alice?.phase === 'ready')).chat.secure.alice;
+  assert.equal(agreedA.id, agreedB.id);
+  assert.equal(agreedA.transcript, agreedB.transcript);
+  assert.equal(agreedB.peerFingerprint, certificateA.fingerprint256);
+  assert(!Object.hasOwn(agreedA, 'sendKey'));
   await api('send', alice.token, { to: 'bob', text: '真实链路', from: 'bob' });
   await until(stateB, (state) => state.chat.messages.some((message: { text: string; from: string }) =>
     message.text === '真实链路' && message.from === 'alice'));
+  await api('test-integrity', alice.token, { to: 'bob' });
+  const tamper = await until(stateB, (state) => state.chat.secure.alice?.rejected === 1);
+  assert.match(tamper.chat.detail, /完整性校验失败/);
+  assert(!tamper.chat.messages.some((message: { text: string }) => message.text === '完整性对照测试'));
+  await api('send', alice.token, { to: 'bob', text: '篡改后正常帧仍可收取' });
+  await until(stateB, (state) => state.chat.secure.alice?.received === 2);
+
   await api('send', bob.token, { to: 'alice', text: '已收到' });
   await until(stateA, (state) => state.chat.messages.some((message: { text: string; from: string }) =>
     message.text === '已收到' && message.from === 'bob'));
@@ -124,6 +182,9 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   await api('connect', carol.token, {});
   const stateC = () => api('state', carol.token);
   await until(stateA, (state) => state.peers.includes('bob') && state.peers.includes('carol'));
+  await api('negotiate', alice.token, { to: 'carol' });
+  const separate = await until(stateC, (state) => state.chat.secure.alice?.phase === 'ready');
+  assert.notEqual(separate.chat.secure.alice.id, agreedA.id);
   await api('send', alice.token, { to: 'carol', text: '定向给第三个客户端' });
   await until(stateC, (state) => state.chat.messages.some((message: { text: string; from: string }) =>
     message.text === '定向给第三个客户端' && message.from === 'alice'));
@@ -155,6 +216,11 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   assert.equal(oldProbe.stage, 'application');
   assert.equal(oldProbe.status, 403);
   assert.equal((await stateB()).chat.phase, 'online');
+  await until(stateA, (state) => !state.chat.secure.bob);
+  await api('send', bob.token, { to: 'alice', text: '换证须重新协商' }, 409);
+  await api('negotiate', bob.token, { to: 'alice' });
+  const fresh = await until(stateA, (state) => state.chat.secure.bob?.phase === 'ready');
+  assert.notEqual(fresh.chat.secure.bob.id, agreedA.id);
   await api('send', bob.token, { to: 'alice', text: '换证后仍可发送' });
   await until(stateA, (state) => state.chat.messages.some((message: { text: string }) => message.text === '换证后仍可发送'));
 
@@ -177,5 +243,12 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   assert.equal(relay.requestId, requestA.id);
   assert.equal(relay.recipientRequestId, requestB.id);
   assert.equal(relay.fingerprint, certificateA.fingerprint256);
+  assert.equal(relay.sessionId, agreedA.id);
+  assert.match(relay.ciphertextPreview, /^[A-Za-z0-9_-]+$/);
+  const steps = evidence.filter((event: { stage: string; sessionId?: string }) =>
+    event.stage === 'session_relayed' && event.sessionId === agreedA.id);
+  assert(steps.some((event: { frameKind: string }) => event.frameKind === 'offer'));
+  assert(steps.some((event: { frameKind: string }) => event.frameKind === 'answer'));
+  assert(steps.some((event: { frameKind: string }) => event.frameKind === 'confirm'));
   assert(!JSON.stringify(evidence).includes('真实链路'));
 });

@@ -13,10 +13,16 @@
       <a class="brand" href="#start">数字认证实验台</a>
       <nav class="side-nav" aria-label="主要导航">
         <a href="#start" data-nav="start" aria-current="page">实验概览</a>
-        <a href="#clients" data-nav="clients">客户端与聊天 <span id="client-count"></span></a>
         <a href="#admin" data-nav="admin">证书审批 <span id="pending-count" hidden></span></a>
         <a href="#tls" data-nav="tls">TLS 对照</a>
         <a href="#evidence" data-nav="evidence">认证记录</a>
+        <section class="client-nav" aria-labelledby="client-nav-heading">
+          <div class="client-nav-header">
+            <h2 id="client-nav-heading">客户端与聊天</h2>
+            <button id="add-client" class="secondary" type="button">＋ 添加客户端</button>
+          </div>
+          <div id="client-links" class="client-links"></div>
+        </section>
       </nav>
     </aside>
 
@@ -30,7 +36,7 @@
         <ol class="experiment-steps">
           <li class="card"><a href="#clients">注册客户端与生成 CSR</a><p>让两个账号各自生成密钥，查看公钥和 CSR 签名验证结果，再提交申请。</p></li>
           <li class="card"><a href="#admin">审批签发与停用</a><p>管理员核对申请，签发证书。停用后可以用旧证书重新发起连接。</p></li>
-          <li class="card"><a href="#clients">持证连接与换证</a><p>两端持证上线、互发消息。换证上线后，再验证旧证书仍被拒绝。</p></li>
+          <li class="card"><a href="#clients">持证连接、密钥协商与换证</a><p>两端上线后用证书认证对方，协商会话密钥并互发加密消息。换证上线后可重新协商。</p></li>
           <li class="card"><a href="#tls">运行 TLS 对照</a><p>检查单向 TLS、双向 TLS 与自签名服务器的不同信任结果。</p></li>
           <li class="card"><a href="#evidence">核对认证记录</a><p>用申请编号、证书指纹和连接编号串起签发、接入与消息转发。</p></li>
         </ol>
@@ -38,24 +44,17 @@
 
       <section id="clients" data-page aria-labelledby="client-heading" hidden>
         <header class="view-header">
-          <div>
-            <h1 id="client-heading" tabindex="-1">客户端与聊天</h1>
-            <p>为每个客户端登录独立账号。证书签发后，连接并选择在线收件人。</p>
-          </div>
-          <button id="add-client" type="button">＋ 添加客户端</button>
+          <h1 id="client-heading" tabindex="-1">客户端与聊天</h1>
         </header>
-        <p id="empty-clients" class="card" hidden>当前没有客户端，点击「添加客户端」开始。</p>
-        <div id="members" class="members" aria-label="客户端列表"></div>
+        <p id="empty-clients" class="card" hidden>当前没有客户端，点击侧栏的「添加客户端」开始。</p>
+        <div id="members"></div>
       </section>
     <template id="member-template">
-      <section class="card member">
-        <header class="section-header">
-          <h2 class="lane-title"></h2>
-          <div class="panel-actions">
-            <span class="identity badge">未登录</span>
-            <button type="button" class="secondary close-client">关闭</button>
-          </div>
-        </header>
+      <section class="card member" hidden>
+        <div class="panel-actions">
+          <span class="identity badge">未登录</span>
+          <button type="button" class="secondary close-client">关闭客户端</button>
+        </div>
         <form class="auth">
           <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="24" required></label>
           <label>密码<input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
@@ -63,7 +62,7 @@
         </form>
         <div class="member-content" hidden>
           <div class="certificate">
-            <div class="section-header"><h3>客户端证书</h3><span class="certificate-status badge">未申请</span></div>
+            <div class="section-header"><h2>客户端证书</h2><span class="certificate-status badge">未申请</span></div>
             <ol class="certificate-steps" aria-label="证书申请进度">
               <li data-step="generate"><strong>生成密钥与 CSR</strong><span></span></li>
               <li data-step="submit"><strong>提交证书申请</strong><span></span></li>
@@ -88,7 +87,7 @@
           </div>
           <div class="chat">
             <div class="section-header">
-              <h3>持证聊天</h3>
+              <h2>持证加密聊天</h2>
               <button type="button" class="connect secondary" disabled>连接</button>
             </div>
             <p class="chat-status" role="status">等待证书签发</p>
@@ -98,6 +97,23 @@
               <label>消息<input name="text" placeholder="输入消息" maxlength="1000" required disabled></label>
               <button type="submit" disabled>发送</button>
             </form>
+            <section class="secure-chat" aria-label="会话密钥协商">
+              <div class="buttons">
+                <button type="button" class="negotiate secondary" disabled>协商会话密钥</button>
+                <button type="button" class="test-integrity secondary" disabled>发送篡改测试包</button>
+              </div>
+              <p class="secure-status" role="status">等待选择在线收件人</p>
+              <section class="secure-sessions" aria-label="本端会话" hidden>
+                <h4>本端会话</h4>
+                <div class="secure-session-list"></div>
+              </section>
+              <template class="secure-session-template">
+                <details class="secure-facts">
+                  <summary><strong></strong><span></span></summary>
+                  <dl></dl>
+                </details>
+              </template>
+            </section>
           </div>
           <button type="button" class="logout secondary">退出账号</button>
         </div>
@@ -143,13 +159,13 @@
     </section>
 
     <section id="evidence" data-page aria-labelledby="evidence-heading" hidden>
-      <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>核对申请、签发、TLS 握手、聊天接入和消息转发的服务端记录。</p></div></header>
+      <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>核对申请签发、TLS 握手、密钥协商帧和密文转发的服务端记录。</p></div></header>
       <div class="card">
         <p id="evidence-locked">请先在<a href="#admin">证书审批</a>登录管理员。</p>
         <p id="evidence-empty" hidden>生成 CSR 或运行 TLS 对照后，记录会显示在这里。</p>
         <div id="evidence-content" hidden>
           <div class="evidence-toolbar">
-            <label for="evidence-filter">筛选记录<input id="evidence-filter" type="search" placeholder="账号、申请编号、证书指纹或 #连接编号"></label>
+            <label for="evidence-filter">筛选记录<input id="evidence-filter" type="search" placeholder="账号、申请编号、会话编号或 #连接编号"></label>
             <button id="download-evidence" class="secondary" type="button">下载筛选记录</button>
           </div>
           <p id="evidence-count" class="evidence-count" role="status"></p>

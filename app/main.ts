@@ -76,7 +76,7 @@ let eventId = 0;
 function observe(event: EvidenceEvent): void {
   const certificate = !('requestId' in event) && 'fingerprint' in event && event.fingerprint
     ? store.certificateReference(event.fingerprint) : undefined;
-  const recipient = event.stage === 'message_relayed' && event.recipientFingerprint
+  const recipient = (event.stage === 'message_relayed' || event.stage === 'session_relayed') && event.recipientFingerprint
     ? store.certificateReference(event.recipientFingerprint) : undefined;
   const entry = {
     ...event, id: ++eventId, timestamp: new Date().toISOString(),
@@ -87,7 +87,7 @@ function observe(event: EvidenceEvent): void {
   if (evidence.length > 80) evidence.shift();
   console.log(JSON.stringify(entry));
 }
-const { server: mutualServer } = createChatServer(pki.directory, [host], observe, store.identity);
+const { server: mutualServer } = createChatServer(pki.directory, [host], observe, store.identity, 'sealed');
 const mutualOrigin = await listenLocal(mutualServer);
 const clients = openClients(mutualOrigin, pki.ca, pki.clientKey);
 let secureOrigin: URL | undefined;
@@ -171,12 +171,20 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
     clients.connect(current);
     return { chat: clients.state(username) };
   }
-  if (route === '/api/send') {
-    const text = typeof body.text === 'string' ? body.text.trim() : '';
-    if (!isChatUsername(body.to) || body.to === username || !text || text.length > 1000) {
-      throw new HttpError(400, '请选择其他在线用户并输入 1–1000 字的消息。');
+  if (route === '/api/negotiate' || route === '/api/send' || route === '/api/test-integrity') {
+    const to = body.to;
+    if (!isChatUsername(to) || to === username) throw new HttpError(400, '请选择其他在线用户。');
+    if (!clients.online().includes(to)) throw new HttpError(409, '对方尚未持证连接。');
+    if (route === '/api/negotiate') {
+      if (!clients.negotiate(username, to)) throw new HttpError(409, '请先持证连接聊天。');
+      return { accepted: true };
     }
-    if (!clients.send(username, body.to, text)) throw new HttpError(409, '请先持证连接聊天。');
+    const integrityTest = route === '/api/test-integrity';
+    const text = integrityTest ? '完整性对照测试' : typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text || text.length > 1000) throw new HttpError(400, '请输入 1–1000 字的消息。');
+    if (!clients.send(username, to, text, integrityTest)) {
+      throw new HttpError(409, '请先持证连接并与该收件人协商会话密钥。');
+    }
     return { accepted: true };
   }
   throw new HttpError(404, '接口不存在。');

@@ -10,7 +10,8 @@
     "pki:setup": "node prototype/setup-pki.ts",
     "pki:status": "node prototype/set-status.ts",
     "start": "node prototype/main.ts",
-    "demo": "node prototype/demo.ts",
+    "demo": "npm run app",
+    "demo:prototype": "node prototype/demo.ts",
     "app": "node app/main.ts",
     "check": "tsc --noEmit",
     "test": "node --test prototype/chat.test.ts app/lifecycle.test.ts"

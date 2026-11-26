@@ -99,12 +99,11 @@ a { color: var(--accent-text); text-underline-offset: 3px; }
 }
 .view-header { margin-bottom: 18px; }
 .view-header p { margin-top: 6px; color: var(--muted); font-size: 14px; line-height: 1.5; }
-.members {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 382px), 1fr));
-  align-items: start;
-  gap: 14px;
-}
+.client-nav { margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.client-nav-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.client-nav-header h2 { padding-inline: 8px; font-size: 14px; color: var(--muted); }
+.client-nav-header button { font-size: 13px; }
+.client-links { display: grid; gap: 6px; margin-top: 8px; }
 .card { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
 .panel-actions { justify-content: flex-end; }
 .close-client { min-height: 34px; padding: 4px 8px; font-size: 13px; }
@@ -176,9 +175,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 pre { border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); padding: 11px; overflow: auto; max-height: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-status, .notice { font-size: 13px; }
 .notice { margin-top: 9px; color: var(--danger); }
-.members .logout, #admin-logout { justify-self: start; }
+.member .logout, #admin-logout { justify-self: start; }
 .messages {
-  height: 140px;
+  height: clamp(180px, 28vh, 320px);
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -228,6 +227,16 @@ tr[data-passed="false"] td:last-child { color: var(--danger); }
 .timeline li { padding: 9px 12px; border-left: 3px solid var(--accent); background: var(--surface-subtle); border-radius: 0 8px 8px 0; }
 .timeline li[data-stage="certificate_revoked"], .timeline li[data-stage="tls_rejected"] { border-color: var(--danger); }
 .timeline dl { margin-bottom: 0; font-size: 13px; }
+.secure-chat { display: grid; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.secure-chat button { font-size: 13px; }
+.secure-status { color: var(--muted); font-size: 13px; }
+.secure-sessions h4 { margin: 4px 0; font-size: 13px; }
+.secure-session-list { display: grid; gap: 6px; }
+.secure-facts { padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.secure-facts summary { overflow-wrap: anywhere; }
+.secure-facts summary span { display: block; padding-left: 1em; color: var(--muted); }
+.messages details { margin-top: 4px; font-size: 12px; }
+.messages code { display: block; overflow-wrap: anywhere; }
 footer { margin-top: 16px; }
 
 @media (max-width: 760px) {
@@ -235,6 +244,8 @@ footer { margin-top: 16px; }
   .sidebar { position: static; height: auto; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
   .brand { padding-inline: 0; }
   .side-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 9px; }
+  .client-nav { grid-column: 1 / -1; margin-top: 4px; }
+  .client-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace { padding: 17px 14px; }
 }
 @media (max-width: 460px) {

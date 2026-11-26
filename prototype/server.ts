@@ -6,6 +6,7 @@ import type { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { readRegistry, demoUsers } from './pki.ts';
+import { readSecureFrame } from '../app/chat-wire.ts';
 
 type IdentityError = 'unregistered_certificate' | 'certificate_revoked' | 'registry_unavailable';
 export type Identity =
@@ -30,6 +31,12 @@ export type ChatEvidence =
   | {
       stage: 'message_relayed'; connection: number; recipientConnection: number;
       from: string; to: string; bytes: number; fingerprint?: string; recipientFingerprint?: string;
+      sessionId?: string; sequence?: number; ciphertextPreview?: string;
+    }
+  | {
+      stage: 'session_relayed'; connection: number; recipientConnection: number;
+      from: string; to: string; bytes: number; fingerprint?: string; recipientFingerprint?: string;
+      sessionId: string; frameKind: 'offer' | 'answer' | 'confirm';
     };
 
 const assets = new Map([
@@ -84,13 +91,19 @@ function send(socket: WebSocket, message: object): void {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
-function parseMessage(text: string): { to: string; text: string } | undefined {
+function parseMessage(text: string, mode: 'prototype' | 'sealed') {
   try {
     const message = JSON.parse(text);
-    if (message?.type !== 'send' || !isChatUsername(message.to) || typeof message.text !== 'string') return;
+    if (!isChatUsername(message?.to)) return;
+    const to = message.to;
+    if (mode === 'sealed') {
+      const frame = message.type === 'secure' ? readSecureFrame(message.frame) : undefined;
+      return frame && { to, frame };
+    }
+    if (message.type !== 'send' || typeof message.text !== 'string') return;
     const body = message.text.trim();
     if (body.length === 0 || body.length > 1000) return;
-    return { to: message.to, text: body };
+    return { to, text: body };
   } catch {
     return;
   }
@@ -106,6 +119,7 @@ export function createChatServer(
   hosts: string[],
   observe?: (event: ChatEvidence) => void,
   identityLookup?: IdentityLookup,
+  mode: 'prototype' | 'sealed' = 'prototype',
 ) {
   if (!identityLookup) readRegistry(directory);
   const lookup = identityLookup ?? ((fingerprint: string) => prototypeLookup(directory, fingerprint));
@@ -160,7 +174,8 @@ export function createChatServer(
 
     const tls = request.socket as TLSSocket;
     const connection = connectionId(tls);
-    const fingerprint = tls.getPeerX509Certificate()?.fingerprint256;
+    const certificate = tls.getPeerX509Certificate();
+    const fingerprint = certificate?.fingerprint256;
     const identity = getIdentity(request, lookup);
     if ('error' in identity) {
       observe?.({
@@ -176,28 +191,55 @@ export function createChatServer(
     }
 
     webSockets.handleUpgrade(request, socket, head, (client) => {
+      const replaced = sockets.has(user);
       sockets.set(user, { client, connection, fingerprint });
+      if (replaced && mode === 'sealed') {
+        for (const [peer, online] of sockets) {
+          if (peer !== user) send(online.client, { type: 'peer_left', user });
+        }
+      }
       observe?.({ stage: 'websocket_admission', connection, status: 101, result: 'active', user, fingerprint });
       client.on('error', () => client.terminate());
       client.on('close', () => {
-        if (sockets.get(user)?.client === client) sockets.delete(user);
+        if (sockets.get(user)?.client !== client) return;
+        sockets.delete(user);
+        if (mode === 'sealed') {
+          for (const online of sockets.values()) send(online.client, { type: 'peer_left', user });
+        }
       });
       client.on('message', (data, isBinary) => {
-        const message = isBinary ? undefined : parseMessage(data.toString());
+        const message = isBinary ? undefined : parseMessage(data.toString(), mode);
         if (!message || message.to === user) {
           send(client, { type: 'error', code: 'invalid_message' });
           return;
         }
         const peer = sockets.get(message.to);
         if (peer?.client.readyState !== WebSocket.OPEN) {
-          send(client, { type: 'error', code: 'peer_offline' });
+          send(client, { type: 'error', code: 'peer_offline', to: message.to });
+          return;
+        }
+        const context = {
+          connection, recipientConnection: peer.connection, from: user, to: message.to,
+          fingerprint, recipientFingerprint: peer.fingerprint,
+        };
+        if (message.frame) {
+          const frame = message.frame;
+          const negotiate = frame.kind === 'offer' || frame.kind === 'answer';
+          send(peer.client, { type: 'secure', from: user, frame, certificate: negotiate ? certificate?.toString() : undefined });
+          const bytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+          if (frame.kind === 'ciphertext') {
+            observe?.({
+              ...context, stage: 'message_relayed', bytes, sessionId: frame.id,
+              sequence: frame.sequence, ciphertextPreview: frame.ciphertext.slice(0, 80),
+            });
+            send(client, { type: 'sealed_sent', to: message.to, id: frame.id, sequence: frame.sequence });
+          } else {
+            observe?.({ ...context, stage: 'session_relayed', bytes, sessionId: frame.id, frameKind: frame.kind });
+          }
           return;
         }
         send(peer.client, { type: 'message', from: user, text: message.text });
-        observe?.({
-          stage: 'message_relayed', connection, recipientConnection: peer.connection,
-          from: user, to: message.to, bytes: Buffer.byteLength(message.text, 'utf8'), fingerprint, recipientFingerprint: peer.fingerprint,
-        });
+        observe?.({ ...context, stage: 'message_relayed', bytes: Buffer.byteLength(message.text, 'utf8') });
         send(client, { type: 'sent', to: message.to, text: message.text });
       });
       send(client, { type: 'ready', user });
