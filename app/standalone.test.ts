@@ -4,11 +4,34 @@ import type { ChildProcess } from 'node:child_process';
 import { createPrivateKey, randomBytes, X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { request } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+
+function callWeb(url: string, options?: { body: object; origin: string; token?: string }) {
+  return new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const outgoing = httpRequest(url, {
+      method: options ? 'POST' : 'GET',
+      headers: options && {
+        Origin: options.origin, 'Content-Type': 'application/json',
+        ...(options.token ? { Authorization: 'Bearer ' + options.token } : {}),
+      },
+    }, async (response) => {
+      try {
+        const chunks = await response.toArray();
+        resolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') });
+      } catch (error) {
+        reject(error);
+      }
+    });
+    outgoing.on('error', reject);
+    outgoing.setTimeout(5000, () => outgoing.destroy(new Error('等待本机接口超时')));
+    outgoing.end(options && JSON.stringify(options.body));
+  });
+}
 
 type Event = Record<string, unknown>;
 type Session = { id: string; phase: string; transcript: string; received: number };
@@ -69,21 +92,17 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   }
 
   let server = startServer();
-  const webOrigin = (await server.line(/^数字认证课程应用：/)).split('：')[1].replace(/\/$/, '');
+  let webOrigin = (await server.line(/^数字认证课程应用：/)).split('：')[1].replace(/\/$/, '');
   const apiOrigin = (await server.line(/^独立客户端 HTTPS：/)).split('：')[1];
   const apiPort = new URL(apiOrigin).port;
-  const serverPage = await (await fetch(webOrigin)).text();
-  assert.match(serverPage, /证书审批/);
+  const serverPage = (await callWeb(webOrigin)).text;
+  assert.match(serverPage, /证书在线查验/);
   assert.match(serverPage, /<body data-standalone>/);
   const administratorPassword = readFileSync(join(serverDir, 'admin-password.txt'), 'utf8').trim();
   async function webApi(route: string, body: object, token = '') {
-    const response = await fetch(webOrigin + '/api/' + route, {
-      method: 'POST',
-      headers: { Origin: webOrigin, 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-      body: JSON.stringify(body),
-    });
+    const response = await callWeb(webOrigin + '/api/' + route, { origin: webOrigin, body, token });
     assert.equal(response.status, 200, route);
-    return response.json();
+    return JSON.parse(response.text);
   }
   const admin = await webApi('login', { username: 'admin', password: administratorPassword });
 
@@ -96,15 +115,11 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   let aliceOrigin = String(aliceReady.webOrigin);
   const bobOrigin = String(bobReady.webOrigin);
   assert.notEqual(aliceOrigin, bobOrigin);
-  assert.match(await (await fetch(aliceOrigin)).text(), /协商会话密钥/);
+  assert.match((await callWeb(aliceOrigin)).text, /协商会话密钥/);
   async function clientApi(origin: string, route: string, body?: object, requestOrigin = origin, status = 200) {
-    const response = await fetch(origin + '/api/' + route, body === undefined ? {} : {
-      method: 'POST',
-      headers: { Origin: requestOrigin, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const response = await callWeb(origin + '/api/' + route, body === undefined ? undefined : { origin: requestOrigin, body });
     assert.equal(response.status, status, route);
-    return response.json();
+    return JSON.parse(response.text);
   }
   const localState = await clientApi(aliceOrigin, 'state');
   assert.equal(localState.username, 'alice');
@@ -146,6 +161,7 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   assert.equal(requestB.status, 'pending');
   assert.notEqual(requestA.id, requestB.id);
   await webApi('approve', { id: requestA.id }, admin.token);
+  assert.equal((await webApi('verify-certificate', { id: requestA.id }, admin.token)).accepted, true);
   await webApi('approve', { id: requestB.id }, admin.token);
 
   function online(client: typeof alice, after = 0) {
@@ -200,12 +216,22 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
     assert(!server.lines.join('\n').includes(message));
   }
 
+  const beforeIntegrity = (await clientApi(bobOrigin, 'state')).chat;
+  await clientApi(aliceOrigin, 'test-integrity', { peer: 'bob' });
+  await bob.event((event) => event.event === 'connection' && event.detail === '密文完整性校验失败，消息已拒绝');
+  const afterIntegrity = (await clientApi(bobOrigin, 'state')).chat;
+  assert.equal(afterIntegrity.secure.alice.rejected, 1);
+  assert.equal(afterIntegrity.secure.alice.received, beforeIntegrity.secure.alice.received);
+  assert.deepEqual(afterIntegrity.messages, beforeIntegrity.messages);
+  await clientApi(aliceOrigin, 'send', { peer: 'bob', text: '篡改拒收后正常消息仍可解密' });
+  await bob.event((e) => e.event === 'received' && e.text === '篡改拒收后正常消息仍可解密');
+
   const bobBeforeExit = bob.events.length;
   alice.command('quit');
   assert.equal((await alice.exit)[0], 0);
   await bob.event((e) => e.event === 'sessions' && Object.keys(e.peers as object).length === 0, bobBeforeExit);
   assert.equal(bob.child.exitCode, null);
-  assert.equal((await fetch(webOrigin)).status, 200);
+  assert.equal((await callWeb(webOrigin)).status, 200);
 
   alice = startClient('alice');
   aliceOrigin = String((await alice.event((e) => e.event === 'client_ready')).webOrigin);
@@ -237,13 +263,44 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   assert.equal(bob.child.exitCode, null);
   assert.equal(alice.child.exitCode, null);
   server = startServer(apiPort);
-  await server.line(/^独立客户端 HTTPS：/);
+  webOrigin = (await server.line(/^数字认证课程应用：/)).split('：')[1].replace(/\/$/, '');
+  const restartedAdmin = await webApi('login', { username: 'admin', password: administratorPassword });
   bob.command('connect');
   await online(bob, bobBeforeStop);
   const aliceBeforeRetry = alice.events.length;
   alice.command('connect');
   await alice.event((e) => e.event === 'connection' && e.phase === 'rejected', aliceBeforeRetry);
   await server.event((e) => e.stage === 'websocket_admission' && e.result === 'certificate_revoked' && e.status === 403);
+  const foreignProbe = await clientApi(bobOrigin, 'probe-revoked', { id: requestA.id }, bobOrigin, 400);
+  assert.equal(foreignProbe.error, '找不到当前账号的已停用证书。');
+  const beforeRenew = alice.events.length;
+  await clientApi(aliceOrigin, 'request', {});
+  const renewed = (await alice.event((e) => e.event === 'certificate', beforeRenew)).certificate as { id: string; status: string };
+  assert.equal(renewed.status, 'pending');
+  assert.notEqual(renewed.id, requestA.id);
+  await webApi('approve', { id: renewed.id }, restartedAdmin.token);
+  await clientApi(aliceOrigin, 'connect', {});
+  await online(alice, beforeRenew);
+  await clientApi(aliceOrigin, 'negotiate', { peer: 'bob' });
+  const newSession = getSession(await alice.event(sessionEvent('bob'), beforeRenew), 'bob');
+  await bob.event(sessionEvent('alice', newSession.id), bobBeforeStop);
+  assert.notEqual(newSession.id, sessionA.id);
+  const replacement = new X509Certificate(readFileSync(join(clientRoot, 'alice', renewed.id + '.crt')));
+  assert(!replacement.publicKey.equals(certificates[0].publicKey));
+
+  const history = (await clientApi(aliceOrigin, 'state')).revokedHistory;
+  assert(history.some((item: { id: string }) => item.id === requestA.id));
+  const beforeProbe = server.events.length;
+  const oldProbe = (await clientApi(aliceOrigin, 'probe-revoked', { id: requestA.id })).probe;
+  assert.equal(oldProbe.status, 403);
+  await server.event((e) => e.stage === 'websocket_admission' && e.result === 'certificate_revoked' &&
+    e.fingerprint === certificates[0].fingerprint256, beforeProbe);
+  const stillOnline = (await clientApi(aliceOrigin, 'state')).chat;
+  assert.equal(stillOnline.phase, 'online');
+  assert.equal(stillOnline.secure.bob.id, newSession.id);
+  await clientApi(aliceOrigin, 'send', { peer: 'bob', text: '旧证书复核后新会话仍可通信' });
+  await bob.event((e) => e.event === 'received' && e.text === '旧证书复核后新会话仍可通信', bobBeforeStop);
+
   alice.command('quit');
   bob.command('quit');
   assert.equal((await alice.exit)[0], 0);

@@ -4,6 +4,10 @@ const connectButton = byId('client-connect');
 const disconnectButton = byId('client-disconnect');
 const negotiateButton = byId('client-negotiate');
 const sendButton = byId('client-send');
+const integrityButton = byId('client-integrity-test');
+const revokedSelect = byId('local-revoked-select');
+const revokedButton = byId('local-revoked-probe');
+const revokedResult = byId('local-revoked-result');
 const peerSelect = byId('chat-peer');
 const messageInput = byId('local-message');
 const messages = byId('local-messages');
@@ -15,6 +19,8 @@ let current;
 let busy = false;
 let lastPeers = '';
 let lastMessages = '';
+let lastRevoked = '';
+let integritySent = '';
 
 function displayName(name) {
   if (name === 'alice') return 'Alice';
@@ -81,9 +87,23 @@ function renderMessages(username, history, peer) {
   if (follow) messages.scrollTop = messages.scrollHeight;
 }
 
+function renderRevoked(history, serviceAvailable) {
+  byId('local-revoked-history').hidden = history.length === 0;
+  const options = JSON.stringify(history);
+  if (options !== lastRevoked) {
+    const previous = revokedSelect.value;
+    revokedSelect.replaceChildren(...history.map(({ id, serial }) => new Option(serial, id)));
+    if (history.some(({ id }) => id === previous)) revokedSelect.value = previous;
+    if (revokedSelect.value !== previous) notice(revokedResult);
+    lastRevoked = options;
+  }
+  revokedSelect.disabled = busy || !serviceAvailable;
+  revokedButton.disabled = busy || !serviceAvailable || !revokedSelect.value;
+}
+
 function render() {
   if (!current) return;
-  const { username, pid, certificate, adminOrigin, serviceAvailable, peers, chat } = current;
+  const { username, pid, certificate, adminOrigin, serviceAvailable, peers, chat, revokedHistory = [] } = current;
   const title = displayName(username) + ' 客户端';
   byId('client-title').textContent = title;
   document.title = title + ' · 数字认证实验台';
@@ -91,9 +111,11 @@ function render() {
   if (/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(adminOrigin)) {
     const adminLink = byId('open-admin');
     const evidenceLink = byId('open-evidence');
+    const verifyLink = byId('open-verify');
     adminLink.href = adminOrigin + '/#admin';
     evidenceLink.href = adminOrigin + '/#evidence';
-    adminLink.hidden = evidenceLink.hidden = false;
+    verifyLink.href = adminOrigin + '/#verify';
+    adminLink.hidden = evidenceLink.hidden = verifyLink.hidden = false;
   }
   notice(unavailable, serviceAvailable ? '' : '暂时联系不到服务端。重启服务端后可重新持证连接。');
 
@@ -109,6 +131,7 @@ function render() {
   }[certificateStatus] ?? '本客户端生成私钥并提交 CSR。';
   requestButton.textContent = certificateStatus === 'revoked' ? '重新申请证书' : '生成 CSR 并申请';
   requestButton.disabled = busy || !serviceAvailable || certificateStatus === 'pending' || certificateStatus === 'issued';
+  renderRevoked(revokedHistory, serviceAvailable);
 
   const phase = chat?.phase ?? 'offline';
   const online = phase === 'online' && serviceAvailable;
@@ -144,6 +167,11 @@ function render() {
   negotiateButton.disabled = busy || !online || !peer || ready;
   messageInput.disabled = !ready;
   sendButton.disabled = busy || !ready;
+  integrityButton.disabled = busy || !ready;
+  const integrityMessage = session?.rejected
+    ? '完整性校验已拒收 ' + session.rejected + ' 条消息。'
+    : integritySent === session?.id ? '篡改测试包已发送，请在对端查看拒收结果。' : '';
+  notice(byId('local-integrity-result'), integrityMessage);
   renderMessages(username, chat?.messages ?? [], peer);
 }
 
@@ -184,8 +212,7 @@ async function perform(command, body = {}) {
   notice(feedback);
   render();
   try {
-    await api(command, body);
-    return true;
+    return await api(command, body);
   } catch (error) {
     notice(feedback, error.message);
     return false;
@@ -202,6 +229,24 @@ connectButton.addEventListener('click', () => { void perform('connect'); });
 disconnectButton.addEventListener('click', () => { void perform('disconnect'); });
 negotiateButton.addEventListener('click', () => { void perform('negotiate', { peer: peerSelect.value }); });
 peerSelect.addEventListener('change', render);
+integrityButton.addEventListener('click', async () => {
+  const sessionId = current?.chat?.secure?.[peerSelect.value]?.id;
+  if (await perform('test-integrity', { peer: peerSelect.value })) {
+    integritySent = sessionId;
+    render();
+  }
+});
+revokedSelect.addEventListener('change', () => notice(revokedResult));
+revokedButton.addEventListener('click', async () => {
+  notice(revokedResult);
+  const data = await perform('probe-revoked', { id: revokedSelect.value });
+  if (!data) return;
+  const { status, code } = data.probe;
+  const detail = status === 403 ? '旧证书接入被拒绝（HTTP 403）。'
+    : status === 101 ? '旧证书意外通过了接入（HTTP 101）。'
+    : status === null ? '旧证书连接失败（' + code + '）。' : '旧证书接入返回 HTTP ' + status + '。';
+  notice(revokedResult, detail);
+});
 byId('local-send-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const text = messageInput.value;

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openSecureSessions } from './secure-session.ts';
 import type { SecureFrame } from './chat-wire.ts';
+import { openStore } from './store.ts';
 
 test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { timeout: 25_000 }, async (t) => {
   const base = resolve('.prototype');
@@ -106,6 +107,61 @@ test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { time
   assert.equal(signedDetails.certificate.caSignatureVerified, true);
   assert.equal(signedDetails.certificate.samePublicKey, true);
   assert.equal(signedDetails.certificate.keyFingerprint, draftDetails.request.keyFingerprint);
+  await t.test('管理员在线查验证书的签名、有效期和登记状态', async () => {
+    await api('verify-certificate', '', { id: requestA.id }, 401);
+    await api('verify-certificate', alice.token, { id: requestA.id }, 403);
+    await api('verify-certificate', admin.token, { pem: draftA.csr }, 400);
+    await api('verify-certificate', admin.token, { pem: certificateA.toString().repeat(2) }, 400);
+
+    const active = await api('verify-certificate', admin.token, { id: requestA.id });
+    assert.equal(active.accepted, true);
+    assert.equal(active.certificate.fingerprint, certificateA.fingerprint256);
+    assert.equal(active.certificate.caSignatureVerified, true);
+    assert.equal(active.certificate.validity, 'valid');
+    assert.equal(active.registration.status, 'issued');
+
+    const caDirectory = join(runtime, 'ca');
+    const unregistered = await api('verify-certificate', admin.token, { pem: readFileSync(join(caDirectory, 'server.crt'), 'utf8') });
+    assert.equal(unregistered.certificate.caSignatureVerified, true);
+    assert.equal(unregistered.registration.status, 'unregistered');
+    assert.equal(unregistered.accepted, false);
+
+    const untrusted = await api('verify-certificate', admin.token, { pem: readFileSync(join(caDirectory, 'self-signed.crt'), 'utf8') });
+    assert.equal(untrusted.certificate.caSignatureVerified, false);
+    assert.equal(untrusted.accepted, false);
+
+    const expiredMember = await api('register', '', { username: 'expired_case', password: samplePassword }, 201);
+    const expiredRequest = (await api('request', expiredMember.token, {}, 201)).certificate;
+    const fixture = join(runtime, 'verification-fixtures');
+    mkdirSync(fixture);
+    writeFileSync(join(fixture, 'request.csr'), expiredRequest.csr);
+    writeFileSync(join(fixture, 'index.txt'), '');
+    writeFileSync(join(fixture, 'serial.txt'), 'A1\n');
+    writeFileSync(join(fixture, 'openssl.cnf'), [
+      '[ca]', 'default_ca = issuer', '[issuer]', 'database = index.txt', 'new_certs_dir = .',
+      'serial = serial.txt', 'certificate = ../ca/ca.crt', 'private_key = ../ca/ca.key',
+      'default_md = sha256', 'policy = identity', '[identity]', 'commonName = supplied',
+    ].join('\n') + '\n');
+    const pem = execFileSync('openssl', [
+      'ca', '-batch', '-notext', '-config', 'openssl.cnf', '-in', 'request.csr', '-extfile', '../ca/issued-client.ext',
+      '-startdate', '20200101000000Z', '-enddate', '20200102000000Z',
+    ], { cwd: fixture, encoding: 'utf8', windowsHide: true, stdio: 'pipe' });
+    const expired = new X509Certificate(pem);
+    const database = openStore(runtime);
+    try {
+      assert(database.approve(expiredRequest.id, {
+        pem, fingerprint: expired.fingerprint256, serial: expired.serialNumber, expiresAt: expired.validToDate.toISOString(),
+      }));
+    } finally {
+      database.close();
+    }
+    const expiredResult = await api('verify-certificate', admin.token, { pem });
+    assert.equal(expiredResult.certificate.caSignatureVerified, true);
+    assert.equal(expiredResult.certificate.validity, 'expired');
+    assert.equal(expiredResult.registration.status, 'issued');
+    assert.equal(expiredResult.accepted, false);
+  });
+
   await t.test('端点拒绝伪造协商签名、对端错配和密文重放', async (caseContext) => {
     const frames: SecureFrame[] = [];
     const ca = readFileSync(join(runtime, 'ca', 'ca.crt'));
@@ -196,6 +252,11 @@ test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { time
   await api('revoke', alice.token, { id: requestB.id }, 403);
   await api('revoke', admin.token, { id: requestB.id });
   assert.equal((await stateB()).certificate.status, 'revoked');
+  const revokedVerification = await api('verify-certificate', admin.token, { id: requestB.id });
+  assert.equal(revokedVerification.certificate.caSignatureVerified, true);
+  assert.equal(revokedVerification.certificate.validity, 'valid');
+  assert.equal(revokedVerification.registration.status, 'revoked');
+  assert.equal(revokedVerification.accepted, false);
   assert.equal((await stateB()).chat.phase, 'offline');
   await api('connect', bob.token, {});
   const rejected = await until(stateB, (state) => state.chat.phase === 'rejected');

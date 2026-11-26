@@ -16,6 +16,7 @@
       </div>
       <nav class="buttons" aria-label="服务端">
         <a id="open-admin" target="_blank" rel="noopener" hidden>证书审批</a>
+        <a id="open-verify" target="_blank" rel="noopener" hidden>证书在线查验</a>
         <a id="open-evidence" target="_blank" rel="noopener" hidden>认证记录</a>
       </nav>
     </header>
@@ -33,6 +34,13 @@
             <dl id="client-certificate-fields"></dl>
           </details>
           <button id="client-request" type="button" disabled>生成 CSR 并申请</button>
+          <details id="local-revoked-history" hidden>
+            <summary>已停用证书</summary>
+            <label for="local-revoked-select">旧证书序列号</label>
+            <select id="local-revoked-select"></select>
+            <button id="local-revoked-probe" class="secondary" type="button" disabled>复核旧证书</button>
+            <p id="local-revoked-result" class="chat-status" role="status" hidden></p>
+          </details>
         </section>
         <section class="card local-client-section" aria-labelledby="connection-heading">
           <div class="section-header">
@@ -59,6 +67,10 @@
           <summary>密钥协商记录</summary>
           <dl id="local-session-fields"></dl>
         </details>
+        <div class="buttons">
+          <button id="client-integrity-test" class="secondary" type="button" disabled>发送篡改测试包</button>
+          <p id="local-integrity-result" class="chat-status" role="status" hidden></p>
+        </div>
         <ul id="local-messages" class="messages" aria-label="消息记录" role="log"></ul>
         <form id="local-send-form" class="local-peer-form">
           <label for="local-message">消息<input id="local-message" name="message" maxlength="1000" autocomplete="off" required disabled></label>

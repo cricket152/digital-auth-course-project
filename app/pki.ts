@@ -34,6 +34,11 @@ export function openPki(runtime: string) {
 
   const ca = readFileSync(join(directory, 'ca.crt'));
   const issuer = new X509Certificate(ca);
+
+  function issuedByCa(certificate: X509Certificate): boolean {
+    return certificate.checkIssued(issuer) && certificate.verify(issuer.publicKey);
+  }
+
   const server = {
     cert: readFileSync(join(directory, 'server.crt')),
     key: readFileSync(join(directory, 'server.key')),
@@ -75,6 +80,34 @@ export function openPki(runtime: string) {
       const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
       return subject === 'subject=CN=' + username && key.asymmetricKeyType === 'rsa' && bits >= 2048 && bits <= 4096;
     },
+    inspectCertificate(pem: string) {
+      const input = pem.trim();
+      if (!/^-----BEGIN CERTIFICATE-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END CERTIFICATE-----$/.test(input)) return;
+      let certificate: X509Certificate;
+      try {
+        certificate = new X509Certificate(input);
+      } catch {
+        return;
+      }
+      const { validFromDate, validToDate } = certificate;
+      const start = validFromDate.getTime();
+      const end = validToDate.getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
+      const checkedAt = new Date();
+      const now = checkedAt.getTime();
+      const validity = now < start ? 'not_yet_valid' : now > end ? 'expired' : 'valid';
+      return {
+        subject: certificate.subject,
+        issuer: certificate.issuer,
+        serial: certificate.serialNumber,
+        fingerprint: certificate.fingerprint256,
+        validFrom: validFromDate.toISOString(),
+        validTo: validToDate.toISOString(),
+        checkedAt: checkedAt.toISOString(),
+        caSignatureVerified: issuedByCa(certificate),
+        validity,
+      };
+    },
     describe(csr: string, pem?: string | null) {
       const publicKey = openssl(['req', '-pubkey', '-noout'], csr).trim();
       const text = openssl(['req', '-text', '-noout', '-subject', '-nameopt', 'RFC2253'], csr);
@@ -98,7 +131,7 @@ export function openPki(runtime: string) {
           usage: certificate.keyUsage, fingerprint: certificate.fingerprint256,
           keyFingerprint: publicKeyFingerprint(certificate.publicKey),
           samePublicKey: key.equals(certificate.publicKey),
-          caSignatureVerified: certificate.checkIssued(issuer) && certificate.verify(issuer.publicKey),
+          caSignatureVerified: issuedByCa(certificate),
         },
       };
     },
@@ -109,7 +142,7 @@ export function openPki(runtime: string) {
         '-sha256', '-days', '7', '-set_serial', '0x01' + randomBytes(15).toString('hex'),
       ], request.csr);
       const cert = new X509Certificate(pem);
-      if (cert.subject !== 'CN=' + request.username || !cert.checkIssued(issuer) || !cert.verify(issuer.publicKey)) {
+      if (cert.subject !== 'CN=' + request.username || !issuedByCa(cert)) {
         throw new Error('签发证书的身份或签名检查失败。');
       }
       return { pem, fingerprint: cert.fingerprint256, serial: cert.serialNumber, expiresAt: cert.validToDate.toISOString() };

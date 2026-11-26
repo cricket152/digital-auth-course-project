@@ -154,6 +154,32 @@ function adminAction(account: Account, route: string, body: Record<string, unkno
   return { certificate: visibleRequest(store.get(row.id)) };
 }
 
+function verifyCertificate(account: Account, body: Record<string, unknown>) {
+  if (account.role !== 'admin') throw new HttpError(403, '此操作仅限管理员。');
+  const { id, pem } = body;
+  if ((id === undefined) === (pem === undefined)) throw new HttpError(400, '请选择登记证书或提交一张 PEM 证书。');
+
+  let source = pem;
+  if (id !== undefined) {
+    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) throw new HttpError(400, '证书申请编号无效。');
+    source = store.get(id)?.pem;
+    if (!source) throw new HttpError(404, '该申请没有可查验的证书。');
+  }
+  const certificate = typeof source === 'string' ? pki.inspectCertificate(source) : undefined;
+  if (!certificate) throw new HttpError(400, '请提交一张有效格式的 PEM 公开证书。');
+
+  const reference = store.certificateReference(certificate.fingerprint);
+  const row = reference ? store.get(reference.id) : undefined;
+  const registration = row && row.status !== 'pending'
+    ? { status: row.status, id: row.id, username: row.username, revokedAt: row.revoked_at }
+    : { status: 'unregistered' };
+  return {
+    certificate,
+    registration,
+    accepted: certificate.caSignatureVerified && certificate.validity === 'valid' && registration.status === 'issued',
+  };
+}
+
 function memberAction(account: Account, route: string, body: Record<string, unknown>) {
   if (account.role !== 'member') throw new HttpError(403, '请用普通用户执行此操作。');
   const { username } = account;
@@ -215,6 +241,14 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
   throw new HttpError(404, '接口不存在。');
 }
 
+function ownedRevokedCertificate(account: Account, id: unknown) {
+  const row = typeof id === 'string' ? store.get(id) : undefined;
+  if (!row || row.username !== account.username || row.status !== 'revoked' || !row.pem) {
+    throw new HttpError(404, '找不到当前账号的已停用证书。');
+  }
+  return { id: row.id, pem: row.pem };
+}
+
 async function handleApi(request: IncomingMessage, response: ServerResponse, route: string, expectedOrigin: string) {
   if (request.method === 'GET') {
     const account = requireAccount(request);
@@ -245,13 +279,14 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
       }
       throw new HttpError(404, '找不到这条证书申请。');
     }
-    if (route === '/api/certificate') {
-      const row = store.current(account.username);
-      if (!row?.pem) throw new HttpError(404, '当前没有可下载的证书。');
+    const revokedId = route.match(/^\/api\/revoked-certificate\/([a-f0-9]{32})$/)?.[1];
+    if (route === '/api/certificate' || revokedId) {
+      const pem = revokedId ? ownedRevokedCertificate(account, revokedId).pem : store.current(account.username)?.pem;
+      if (!pem) throw new HttpError(404, '当前没有可下载的证书。');
       response.writeHead(200, {
         'Content-Type': 'application/pem-certificate-chain',
         'Content-Disposition': 'attachment; filename=' + account.username + '.crt',
-      }).end(row.pem);
+      }).end(pem);
       return;
     }
     throw new HttpError(404, '接口不存在。');
@@ -271,6 +306,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     return;
   }
   const account = requireAccount(request);
+  if (route === '/api/verify-certificate') {
+    reply(response, 200, verifyCertificate(account, body));
+    return;
+  }
   if (route === '/api/logout') {
     sessions.delete(tokenFor(request));
     const stillSignedIn = [...sessions.values()].some((session) =>
@@ -280,12 +319,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     return;
   }
   if (route === '/api/probe-revoked') {
-    if (!clients) throw new HttpError(409, '请在独立客户端终端持旧证书重连。');
-    const row = typeof body.id === 'string' ? store.get(body.id) : undefined;
-    if (!row || row.username !== account.username || row.status !== 'revoked' || !row.pem) {
-      throw new HttpError(404, '找不到当前账号的已停用证书。');
-    }
-    reply(response, 200, await clients.probe(row.id, row.pem));
+    if (!clients) throw new HttpError(409, '请从独立客户端网页复核旧证书。');
+    const { id, pem } = ownedRevokedCertificate(account, body.id);
+    reply(response, 200, await clients.probe(id, pem));
     return;
   }
   const result = route === '/api/approve' || route === '/api/revoke'

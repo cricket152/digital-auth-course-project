@@ -8,10 +8,12 @@ const assets = new Map([
   ['/app.css', { file: './app.css', type: 'text/css' }],
   ['/client.js', { file: './client.js', type: 'text/javascript' }],
 ]);
-export type ClientAction = 'request' | 'connect' | 'disconnect' | 'negotiate' | 'send';
-const commands = new Map<string, ClientAction>([
-  ['request', 'request'], ['connect', 'connect'], ['disconnect', 'disconnect'], ['negotiate', 'negotiate'], ['send', 'send'],
-]);
+const commands = ['request', 'connect', 'disconnect', 'negotiate', 'send', 'test-integrity', 'probe-revoked'] as const;
+export type ClientAction = (typeof commands)[number];
+
+function findCommand(route: string) {
+  return commands.find((command) => route === '/api/' + command);
+}
 
 function json(response: ServerResponse, status: number, data: unknown) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(data));
@@ -33,7 +35,7 @@ async function readCommand(request: IncomingMessage): Promise<Record<string, unk
 export async function openClientWeb(
   port: number,
   state: () => Promise<unknown>,
-  action: (command: ClientAction, peer?: unknown, text?: unknown) => Promise<void>,
+  action: (command: ClientAction, body: Record<string, unknown>) => Promise<object | undefined>,
 ) {
   let origin: URL;
   async function handle(request: IncomingMessage, response: ServerResponse) {
@@ -51,8 +53,8 @@ export async function openClientWeb(
       json(response, 200, await state());
       return;
     }
-    const command = commands.get(route.replace(/^\/api\//, ''));
-    if (command && route.startsWith('/api/') && request.method === 'POST') {
+    const command = findCommand(route);
+    if (command && request.method === 'POST') {
       if (request.headers.origin !== origin.origin) {
         json(response, 403, { error: '操作必须由本客户端网页发起。' });
         return;
@@ -62,9 +64,8 @@ export async function openClientWeb(
         return;
       }
       try {
-        const body = await readCommand(request);
-        await action(command, body.peer, body.text);
-        json(response, 200, { ok: true });
+        const result = await action(command, await readCommand(request));
+        json(response, 200, result ?? { ok: true });
       } catch (error) {
         json(response, 400, { error: (error as Error).message });
       }

@@ -624,6 +624,108 @@ downloadEvidence.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 
+function createCertificateVerification() {
+  const locked = document.querySelector('#verify-locked');
+  const content = document.querySelector('#verify-content');
+  const recordForm = document.querySelector('#verify-record');
+  const pemForm = document.querySelector('#verify-pem');
+  const select = document.querySelector('#verify-select');
+  const result = document.querySelector('#verify-result');
+  const notice = document.querySelector('#verify-notice');
+  const recordButton = recordForm.querySelector('button');
+  const pemButton = pemForm.querySelector('button');
+  const validityLabels = { valid: '在有效期内', expired: '已过期', not_yet_valid: '尚未生效' };
+  const registrationLabels = { issued: '已登记', revoked: '已停用', unregistered: '未登记' };
+  let token = '';
+  let optionsKey;
+  let busy = false;
+
+  function updateButtons() {
+    recordButton.disabled = busy || !select.value;
+    pemButton.disabled = busy;
+  }
+
+  function renderResult({ certificate, registration, accepted }) {
+    const verdict = document.querySelector('#verify-decision');
+    const validity = validityLabels[certificate.validity];
+    const registrationStatus = registrationLabels[registration.status];
+    let summary = '有效';
+    if (!certificate.caSignatureVerified) summary = 'CA 签名未通过';
+    else if (certificate.validity !== 'valid') summary = validity;
+    else if (!accepted) summary = registrationStatus;
+    verdict.textContent = summary;
+    verdict.dataset.state = accepted ? 'issued' : 'revoked';
+    writeDetails(document.querySelector('#verify-checks'), {
+      '实验 CA 签名': certificate.caSignatureVerified ? '通过' : '未通过',
+      有效期: validity,
+      登记状态: registrationStatus,
+    });
+    writeDetails(document.querySelector('#verify-details'), {
+      证书主体: certificate.subject,
+      签发者: certificate.issuer,
+      序列号: certificate.serial,
+      'SHA-256 指纹': certificate.fingerprint,
+      生效时间: formatTime(certificate.validFrom),
+      到期时间: formatTime(certificate.validTo),
+      关联账号: registration.username,
+      申请编号: registration.id,
+      停用时间: formatTime(registration.revokedAt),
+      查验时间: formatTime(certificate.checkedAt),
+    });
+    result.hidden = false;
+  }
+
+  async function verify(body) {
+    if (!token || busy) return;
+    const current = token;
+    busy = true;
+    updateButtons();
+    result.hidden = true;
+    showNotice(notice);
+    try {
+      const data = await api('verify-certificate', { token: current, body });
+      if (token === current) renderResult(data);
+    } catch (error) {
+      if (token === current) showNotice(notice, error.message);
+    } finally {
+      busy = false;
+      updateButtons();
+    }
+  }
+
+  recordForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void verify({ id: select.value });
+  });
+  select.addEventListener('change', updateButtons);
+  pemForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void verify({ pem: pemForm.elements.pem.value.trim() });
+  });
+
+  return (adminToken, requests) => {
+    if (token !== adminToken) {
+      result.hidden = true;
+      showNotice(notice);
+      pemForm.reset();
+    }
+    token = adminToken;
+    locked.hidden = Boolean(token);
+    content.hidden = !token;
+    const certificates = requests.filter((row) => row.serial);
+    const key = JSON.stringify(certificates.map(({ id, status }) => [id, status]));
+    if (optionsKey === key) return;
+    optionsKey = key;
+    const previous = select.value;
+    select.replaceChildren(
+      new Option(certificates.length ? '请选择证书' : '暂无已签发证书', ''),
+      ...certificates.map((row) => new Option([row.username, labels[row.status], row.serial].join(' · '), row.id)),
+    );
+    if (certificates.some((row) => row.id === previous)) select.value = previous;
+    updateButtons();
+  };
+}
+
 function createAdmin() {
   const login = document.querySelector('#admin-login');
   const content = document.querySelector('#admin-content');
@@ -631,6 +733,7 @@ function createAdmin() {
   const status = document.querySelector('#admin-status');
   const notice = document.querySelector('#admin-notice');
   const storageKey = 'course-admin';
+  const renderVerification = createCertificateVerification();
   let token = sessionStorage.getItem(storageKey) ?? '';
   let refreshing = false;
 
@@ -649,6 +752,7 @@ function createAdmin() {
     pendingCount.textContent = String(pending);
     pendingCount.hidden = pending === 0;
     renderEvidence(data?.evidence ?? null);
+    renderVerification(data ? token : '', data?.requests ?? []);
     if (!data) {
       list.replaceChildren();
       delete list.dataset.marker;

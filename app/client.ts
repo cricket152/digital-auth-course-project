@@ -11,7 +11,13 @@ import type { ClientAction } from './client-web.ts';
 import type { CertificateRequest } from './store.ts';
 
 type Certificate = Pick<CertificateRequest, 'id' | 'status' | 'fingerprint' | 'serial'>;
-type ServerState = { certificate: Certificate | null; chatOrigin?: string; adminOrigin?: string; peers: string[] };
+type ServerState = {
+  certificate: Certificate | null;
+  chatOrigin?: string;
+  adminOrigin?: string;
+  peers: string[];
+  revokedHistory: { id: string; serial: string; revoked_at: string }[];
+};
 type Draft = { id: string; csr: string };
 
 function certificateSummary(certificate: Certificate | null): Certificate | null {
@@ -185,7 +191,7 @@ async function run() {
     return remoteState;
   }
 
-  async function perform(command: ClientAction, peer?: unknown, text?: unknown) {
+  async function perform(command: ClientAction, { peer, text, id }: Record<string, unknown>) {
     if (command === 'request') {
       const { certificate } = await state();
       if (certificate && certificate.status !== 'revoked') {
@@ -217,14 +223,25 @@ async function run() {
       chat?.disconnect(username, '客户端已主动断开。');
       return;
     }
+    if (command === 'probe-revoked') {
+      if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) throw new Error('请选择已停用的证书。');
+      await state();
+      const pem = await api('revoked-certificate/' + id);
+      if (!existsSync(keyPath(id))) throw new Error('本地缺少这张旧证书对应的私钥。');
+      if (!chat) throw new Error('未连接到聊天服务。');
+      return { probe: await chat.probe(id, pem) };
+    }
     if (!isChatUsername(peer) || peer === username) throw new Error('请输入另一端的账号。');
     if (command === 'negotiate') {
       if (!chat?.negotiate(username, peer)) throw new Error('请先持证连接。');
       return;
     }
-    const message = typeof text === 'string' ? text.trim() : '';
+    const integrityTest = command === 'test-integrity';
+    const message = integrityTest ? '完整性对照测试' : typeof text === 'string' ? text.trim() : '';
     if (!message || message.length > 1000) throw new Error('请输入 1–1000 字的消息。');
-    if (!chat?.send(username, peer, message)) throw new Error('请先持证连接并与对方协商会话密钥。');
+    if (!chat?.send(username, peer, message, integrityTest)) {
+      throw new Error('请先持证连接并与对方协商会话密钥。');
+    }
   }
 
   let pending = Promise.resolve();
@@ -243,12 +260,12 @@ async function run() {
     } catch {
       serviceAvailable = false;
     }
-    const { certificate, adminOrigin, peers } = remoteState;
+    const { certificate, adminOrigin, peers, revokedHistory } = remoteState;
     return {
-      username, pid: process.pid, certificate: certificateSummary(certificate), adminOrigin, serviceAvailable,
+      username, pid: process.pid, certificate: certificateSummary(certificate), adminOrigin, revokedHistory, serviceAvailable,
       peers: serviceAvailable ? peers : [], chat: chat?.state(username),
     };
-  }), (command, peer, text) => serial(() => perform(command, peer, text)));
+  }), (command, body) => serial(() => perform(command, body)));
   record('client_ready', { pid: process.pid, directory, webOrigin: web.origin });
   console.log('客户端网页：' + web.origin + '/');
   const help = 'request 申请证书 | status 查看状态 | connect 持证连接 | negotiate <账号> 协商 | send <账号> <消息> 发送 | disconnect 断开 | quit 退出';
@@ -273,7 +290,7 @@ async function run() {
       } else if (command === 'request' || command === 'connect' || command === 'disconnect' ||
           command === 'negotiate' || command === 'send') {
         const message = line.trim().match(/^send\s+\S+\s+(.+)$/)?.[1];
-        await serial(() => perform(command, peer, message));
+        await serial(() => perform(command, { peer, text: message }));
       } else if (command) console.log(help);
     } catch (error) {
       record('error', { detail: (error as Error).message });
