@@ -63,6 +63,16 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
 
   const draftA = (await api('csr', alice.token, {}, 201)).draft;
   assert.match(draftA.csr, /BEGIN CERTIFICATE REQUEST/);
+  const draftDetails = await api('request-details/' + draftA.id, alice.token);
+  assert.equal(draftDetails.request.subject, 'CN=alice');
+  assert.equal(draftDetails.request.keyAlgorithm, 'rsa');
+  assert.match(draftDetails.request.publicKey, /BEGIN PUBLIC KEY/);
+  assert.match(draftDetails.request.keyFingerprint, /^[0-9a-f]{64}$/);
+  assert.match(draftDetails.request.signatureAlgorithm, /sha256/i);
+  assert.match(draftDetails.request.signatureHex, /^[0-9a-f]{512}$/);
+  assert.equal(draftDetails.request.signatureVerified, true);
+  assert.equal(draftDetails.certificate, null);
+  await api('request-details/' + draftA.id, bob.token, undefined, 404);
   assert.equal((await api('csr', alice.token, {}, 201)).draft.id, draftA.id);
   assert.equal((await api('state', alice.token)).certificate, null);
   await api('request', bob.token, { draftId: draftA.id }, 404);
@@ -79,6 +89,7 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   const adminPwd = readFileSync(join(runtime, 'admin-password.txt'), 'utf8').trim();
   const admin = await api('login', '', { username: 'admin', password: adminPwd });
   assert.equal(admin.account.role, 'admin');
+  assert.equal((await api('request-details/' + requestA.id, admin.token)).request.signatureVerified, true);
   await api('approve', admin.token, { id: requestA.id });
   await api('approve', admin.token, { id: requestB.id });
   await api('approve', admin.token, { id: requestB.id }, 409);
@@ -87,6 +98,12 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   const issuer = new X509Certificate(readFileSync(join(runtime, 'ca', 'ca.crt')));
   assert.equal(certificateA.subject, 'CN=alice');
   assert(certificateA.verify(issuer.publicKey));
+  const signedDetails = await api('request-details/' + requestA.id, alice.token);
+  assert.equal(signedDetails.certificate.fingerprint, certificateA.fingerprint256);
+  assert.equal(signedDetails.certificate.caFingerprint, issuer.fingerprint256);
+  assert.equal(signedDetails.certificate.caSignatureVerified, true);
+  assert.equal(signedDetails.certificate.samePublicKey, true);
+  assert.equal(signedDetails.certificate.keyFingerprint, draftDetails.request.keyFingerprint);
   await api('connect', alice.token, {});
   await api('connect', bob.token, {});
   const stateA = () => api('state', alice.token);
@@ -130,6 +147,17 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   await api('connect', bob.token, {});
   await until(stateB, (state) => state.chat.phase === 'online');
 
+  const oldCertificate = (await stateB()).revokedHistory.find((row: { id: string }) => row.id === requestB.id);
+  assert(oldCertificate?.serial);
+  await api('probe-revoked', alice.token, { id: requestB.id }, 404);
+  await api('probe-revoked', bob.token, { id: renewed.id }, 404);
+  const oldProbe = await api('probe-revoked', bob.token, { id: requestB.id });
+  assert.equal(oldProbe.stage, 'application');
+  assert.equal(oldProbe.status, 403);
+  assert.equal((await stateB()).chat.phase, 'online');
+  await api('send', bob.token, { to: 'alice', text: '换证后仍可发送' });
+  await until(stateA, (state) => state.chat.messages.some((message: { text: string }) => message.text === '换证后仍可发送'));
+
   const { results } = await api('compare', '', {});
   assert.equal(results.length, 4);
   assert(results.every((result: { passed: boolean }) => result.passed), JSON.stringify(results));
@@ -139,5 +167,15 @@ test('注册、CSR 审批、mTLS 聊天、停用重连与 TLS 对照', { timeout
   assert(refusal);
   assert(evidence.some((event: { stage: string; connection: number; authorized?: boolean }) =>
     event.stage === 'tls_established' && event.connection === refusal.connection && event.authorized));
+  assert.equal(refusal.requestId, requestB.id);
+  const issues = evidence.filter((event: { stage: string }) => event.stage === 'certificate_issued');
+  assert(issues.some((event: { requestId: string; fingerprint: string }) =>
+    event.requestId === requestB.id && event.fingerprint === refusal.fingerprint));
+  const relay = evidence.find((event: { stage: string; from?: string; to?: string }) =>
+    event.stage === 'message_relayed' && event.from === 'alice' && event.to === 'bob');
+  assert(relay);
+  assert.equal(relay.requestId, requestA.id);
+  assert.equal(relay.recipientRequestId, requestB.id);
+  assert.equal(relay.fingerprint, certificateA.fingerprint256);
   assert(!JSON.stringify(evidence).includes('真实链路'));
 });

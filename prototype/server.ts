@@ -25,9 +25,12 @@ export type ChatEvidence =
   | { stage: 'tls_rejected'; connection: number; code: string }
   | {
       stage: 'websocket_admission'; connection: number; status: 101 | 403 | 409 | 503;
-      result: 'active' | 'already_connected' | IdentityError; user?: string;
+      result: 'active' | 'already_connected' | IdentityError; user?: string; fingerprint?: string;
     }
-  | { stage: 'message_relayed'; connection: number; recipientConnection: number; from: string; to: string; bytes: number };
+  | {
+      stage: 'message_relayed'; connection: number; recipientConnection: number;
+      from: string; to: string; bytes: number; fingerprint?: string; recipientFingerprint?: string;
+    };
 
 const assets = new Map([
   ['/', { body: readFileSync(new URL('./index.html', import.meta.url)), type: 'text/html; charset=utf-8' }],
@@ -106,7 +109,7 @@ export function createChatServer(
 ) {
   if (!identityLookup) readRegistry(directory);
   const lookup = identityLookup ?? ((fingerprint: string) => prototypeLookup(directory, fingerprint));
-  const sockets = new Map<string, { client: WebSocket; connection: number }>();
+  const sockets = new Map<string, { client: WebSocket; connection: number; fingerprint?: string }>();
   const connectionIds = new WeakMap<TLSSocket, number>();
   let nextConnection = 0;
 
@@ -155,24 +158,26 @@ export function createChatServer(
     if (request.url !== '/chat') return rejectUpgrade(socket, 404);
     if (!allowedOrigins.includes(request.headers.origin ?? '')) return rejectUpgrade(socket, 403);
 
-    const connection = connectionId(request.socket as TLSSocket);
+    const tls = request.socket as TLSSocket;
+    const connection = connectionId(tls);
+    const fingerprint = tls.getPeerX509Certificate()?.fingerprint256;
     const identity = getIdentity(request, lookup);
     if ('error' in identity) {
       observe?.({
         stage: 'websocket_admission', connection, status: identity.status,
-        result: identity.error, user: identity.user,
+        result: identity.error, user: identity.user, fingerprint,
       });
       return rejectUpgrade(socket, identity.status);
     }
     const { user } = identity;
     if (sockets.get(user)?.client.readyState === WebSocket.OPEN) {
-      observe?.({ stage: 'websocket_admission', connection, status: 409, result: 'already_connected', user });
+      observe?.({ stage: 'websocket_admission', connection, status: 409, result: 'already_connected', user, fingerprint });
       return rejectUpgrade(socket, 409);
     }
 
     webSockets.handleUpgrade(request, socket, head, (client) => {
-      sockets.set(user, { client, connection });
-      observe?.({ stage: 'websocket_admission', connection, status: 101, result: 'active', user });
+      sockets.set(user, { client, connection, fingerprint });
+      observe?.({ stage: 'websocket_admission', connection, status: 101, result: 'active', user, fingerprint });
       client.on('error', () => client.terminate());
       client.on('close', () => {
         if (sockets.get(user)?.client === client) sockets.delete(user);
@@ -191,7 +196,7 @@ export function createChatServer(
         send(peer.client, { type: 'message', from: user, text: message.text });
         observe?.({
           stage: 'message_relayed', connection, recipientConnection: peer.connection,
-          from: user, to: message.to, bytes: Buffer.byteLength(message.text, 'utf8'),
+          from: user, to: message.to, bytes: Buffer.byteLength(message.text, 'utf8'), fingerprint, recipientFingerprint: peer.fingerprint,
         });
         send(client, { type: 'sent', to: message.to, text: message.text });
       });

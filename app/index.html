@@ -10,9 +10,10 @@
 <body>
   <div class="app-shell">
     <aside class="sidebar" aria-label="实验台导航">
-      <a class="brand" href="#clients">数字认证实验台</a>
+      <a class="brand" href="#start">数字认证实验台</a>
       <nav class="side-nav" aria-label="主要导航">
-        <a href="#clients" data-nav="clients" aria-current="page">客户端与聊天 <span id="client-count"></span></a>
+        <a href="#start" data-nav="start" aria-current="page">实验概览</a>
+        <a href="#clients" data-nav="clients">客户端与聊天 <span id="client-count"></span></a>
         <a href="#admin" data-nav="admin">证书审批 <span id="pending-count" hidden></span></a>
         <a href="#tls" data-nav="tls">TLS 对照</a>
         <a href="#evidence" data-nav="evidence">认证记录</a>
@@ -20,10 +21,25 @@
     </aside>
 
     <main class="workspace">
-      <section id="clients" data-page aria-labelledby="client-heading">
+      <section id="start" data-page aria-labelledby="start-heading">
+        <header class="view-header">
+          <div><h1 id="start-heading">证书认证与安全聊天</h1>
+          <p>在一台电脑上操作多个客户端，查看证书签发、双向 TLS 和停用重连的实际结果。</p></div>
+          <button id="start-experiment" type="button">开始实验</button>
+        </header>
+        <ol class="experiment-steps">
+          <li class="card"><a href="#clients">注册客户端与生成 CSR</a><p>让两个账号各自生成密钥，查看公钥和 CSR 签名验证结果，再提交申请。</p></li>
+          <li class="card"><a href="#admin">审批签发与停用</a><p>管理员核对申请，签发证书。停用后可以用旧证书重新发起连接。</p></li>
+          <li class="card"><a href="#clients">持证连接与换证</a><p>两端持证上线、互发消息。换证上线后，再验证旧证书仍被拒绝。</p></li>
+          <li class="card"><a href="#tls">运行 TLS 对照</a><p>检查单向 TLS、双向 TLS 与自签名服务器的不同信任结果。</p></li>
+          <li class="card"><a href="#evidence">核对认证记录</a><p>用申请编号、证书指纹和连接编号串起签发、接入与消息转发。</p></li>
+        </ol>
+      </section>
+
+      <section id="clients" data-page aria-labelledby="client-heading" hidden>
         <header class="view-header">
           <div>
-            <h1 id="client-heading">客户端与聊天</h1>
+            <h1 id="client-heading" tabindex="-1">客户端与聊天</h1>
             <p>为每个客户端登录独立账号。证书签发后，连接并选择在线收件人。</p>
           </div>
           <button id="add-client" type="button">＋ 添加客户端</button>
@@ -65,6 +81,10 @@
               <button type="button" class="download secondary" hidden>下载证书</button>
               <a class="review-link" href="#admin" hidden>打开审批页</a>
             </div>
+            <details class="revoked-history" hidden>
+              <summary>已停用证书</summary>
+              <ul class="revoked-list"></ul>
+            </details>
           </div>
           <div class="chat">
             <div class="section-header">
@@ -83,6 +103,24 @@
         </div>
         <p class="notice" role="status" hidden></p>
       </section>
+    </template>
+
+    <template id="crypto-template">
+      <div class="crypto-details">
+        <p class="crypto-status" role="status"></p>
+        <div class="crypto-content" hidden>
+          <h3>CSR 解析与校验</h3>
+          <p class="crypto-explanation">用 CSR 内的公钥验证请求的签名。</p>
+          <dl class="csr-facts"></dl>
+          <details><summary>公钥 PEM</summary><pre class="public-pem"></pre></details>
+          <details><summary>CSR 签名值（十六进制）</summary><pre class="signature-hex"></pre></details>
+          <div class="signed-certificate" hidden>
+            <h3>签发证书与公钥比对</h3>
+            <p class="crypto-explanation">用实验 CA 的公钥验签，再核对两份公钥的 SHA-256 摘要。</p>
+            <dl class="signed-facts"></dl>
+          </div>
+        </div>
+      </div>
     </template>
 
     <section id="admin" data-page aria-labelledby="admin-heading" hidden>
@@ -105,11 +143,21 @@
     </section>
 
     <section id="evidence" data-page aria-labelledby="evidence-heading" hidden>
-      <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>按连接编号核对握手、证书状态检查和消息转发。</p></div></header>
+      <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>核对申请、签发、TLS 握手、聊天接入和消息转发的服务端记录。</p></div></header>
       <div class="card">
         <p id="evidence-locked">请先在<a href="#admin">证书审批</a>登录管理员。</p>
-        <p id="evidence-empty" hidden>当前还没有连接记录。让客户端持证连接后，记录会显示在这里。</p>
-        <pre id="server-events" hidden aria-label="后端连接记录"></pre>
+        <p id="evidence-empty" hidden>生成 CSR 或运行 TLS 对照后，记录会显示在这里。</p>
+        <div id="evidence-content" hidden>
+          <div class="evidence-toolbar">
+            <label for="evidence-filter">筛选记录<input id="evidence-filter" type="search" placeholder="账号、申请编号、证书指纹或 #连接编号"></label>
+            <button id="download-evidence" class="secondary" type="button">下载筛选记录</button>
+          </div>
+          <p id="evidence-count" class="evidence-count" role="status"></p>
+          <ol id="evidence-timeline" class="timeline" aria-label="认证时间线"></ol>
+          <details class="raw-evidence"><summary>查看原始日志</summary>
+            <pre id="server-events" aria-label="后端连接记录"></pre>
+          </details>
+        </div>
       </div>
     </section>
 

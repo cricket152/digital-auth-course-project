@@ -59,14 +59,35 @@ if (process.platform !== 'win32') process.umask(0o077);
 mkdirSync(runtime, { recursive: true, mode: 0o700 });
 const store = openStore(runtime);
 const pki = openPki(runtime);
-const evidence: Array<ChatEvidence & { id: number; timestamp: string }> = [];
+type PkiEvidence = {
+  stage: 'csr_generated' | 'csr_submitted' | 'certificate_issued' | 'certificate_revoked';
+  requestId: string;
+  user: string;
+  admin?: string;
+  serial?: string;
+  fingerprint?: string;
+};
+type EvidenceEvent = ChatEvidence | PkiEvidence;
+type RecordedEvent = EvidenceEvent & {
+  id: number; timestamp: string; requestId?: string; user?: string; recipientRequestId?: string;
+};
+const evidence: RecordedEvent[] = [];
 let eventId = 0;
-const { server: mutualServer } = createChatServer(pki.directory, [host], (event) => {
-  const entry = { ...event, id: ++eventId, timestamp: new Date().toISOString() };
+function observe(event: EvidenceEvent): void {
+  const certificate = !('requestId' in event) && 'fingerprint' in event && event.fingerprint
+    ? store.certificateReference(event.fingerprint) : undefined;
+  const recipient = event.stage === 'message_relayed' && event.recipientFingerprint
+    ? store.certificateReference(event.recipientFingerprint) : undefined;
+  const entry = {
+    ...event, id: ++eventId, timestamp: new Date().toISOString(),
+    ...(certificate ? { requestId: certificate.id, user: certificate.username } : {}),
+    ...(recipient ? { recipientRequestId: recipient.id } : {}),
+  };
   evidence.push(entry);
   if (evidence.length > 80) evidence.shift();
   console.log(JSON.stringify(entry));
-}, store.identity);
+}
+const { server: mutualServer } = createChatServer(pki.directory, [host], observe, store.identity);
 const mutualOrigin = await listenLocal(mutualServer);
 const clients = openClients(mutualOrigin, pki.ca, pki.clientKey);
 let secureOrigin: URL | undefined;
@@ -111,9 +132,15 @@ function adminAction(account: Account, route: string, body: Record<string, unkno
   const row = typeof body.id === 'string' ? store.get(body.id) : undefined;
   if (!row) throw new HttpError(404, '找不到这条证书申请。');
   if (route === '/api/approve') {
-    if (row.status !== 'pending' || !store.approve(row.id, pki.issue(row))) throw new HttpError(409, '该申请已处理。');
+    if (row.status !== 'pending') throw new HttpError(409, '该申请已处理。');
+    const issued = pki.issue(row);
+    if (!store.approve(row.id, issued)) throw new HttpError(409, '该申请已处理。');
+    observe({ stage: 'certificate_issued', requestId: row.id, user: row.username, admin: account.username,
+      serial: issued.serial, fingerprint: issued.fingerprint });
   } else {
     if (!store.revoke(row.id)) throw new HttpError(409, '只能停用已签发的证书。');
+    observe({ stage: 'certificate_revoked', requestId: row.id, user: row.username, admin: account.username,
+      serial: row.serial ?? undefined, fingerprint: row.fingerprint ?? undefined });
     clients.disconnect(row.username, '管理员已停用证书，现有聊天连接已关闭。');
   }
   return { certificate: visibleRequest(store.get(row.id)) };
@@ -132,9 +159,11 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
     if (!draft) {
       const { id, csr } = pki.createRequest(username);
       draft = store.createDraft(id, username, csr);
+      if (draft.id === id) observe({ stage: 'csr_generated', requestId: id, user: username });
     }
     if (route === '/api/csr') return { draft };
     if (!store.submitDraft(draft)) throw new HttpError(409, '已有证书申请。');
+    observe({ stage: 'csr_submitted', requestId: draft.id, user: username });
     return { certificate: visibleRequest(store.get(draft.id)) };
   }
   if (route === '/api/connect') {
@@ -161,11 +190,25 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
         ? { account, requests: store.list().map(visibleRequest), evidence }
         : {
             account, certificate: visibleRequest(store.current(account.username)), draft: store.draft(account.username) ?? null,
-            chat: clients.state(account.username),
+            chat: clients.state(account.username), revokedHistory: store.revokedHistory(account.username),
             peers: clients.online().filter((user) => user !== account.username),
           };
       reply(response, 200, state);
       return;
+    }
+    const detailId = route.match(/^\/api\/request-details\/([a-f0-9]{32})$/)?.[1];
+    if (detailId) {
+      const row = store.get(detailId);
+      const draft = row ? undefined : store.draft(account.username);
+      if (row && (account.role === 'admin' || row.username === account.username)) {
+        reply(response, 200, pki.describe(row.csr, row.pem));
+        return;
+      }
+      if (draft?.id === detailId) {
+        reply(response, 200, pki.describe(draft.csr));
+        return;
+      }
+      throw new HttpError(404, '找不到这条证书申请。');
     }
     if (route === '/api/certificate') {
       const row = store.current(account.username);
@@ -196,6 +239,14 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
       session.account.username === account.username && session.expires > Date.now());
     if (account.role === 'member' && !stillSignedIn) clients.disconnect(account.username, '账号已退出。');
     reply(response, 200, { ok: true });
+    return;
+  }
+  if (route === '/api/probe-revoked') {
+    const row = typeof body.id === 'string' ? store.get(body.id) : undefined;
+    if (!row || row.username !== account.username || row.status !== 'revoked' || !row.pem) {
+      throw new HttpError(404, '找不到当前账号的已停用证书。');
+    }
+    reply(response, 200, await clients.probe(row.id, row.pem));
     return;
   }
   const result = route === '/api/approve' || route === '/api/revoke'

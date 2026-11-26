@@ -46,7 +46,7 @@ const clientSlots = new Map();
 
 function showPage() {
   const fragment = location.hash.slice(1);
-  const page = pages.some(({ id }) => id === fragment) ? fragment : 'clients';
+  const page = pages.some(({ id }) => id === fragment) ? fragment : 'start';
   for (const section of pages) section.hidden = section.id !== page;
   for (const link of navigation) {
     if (link.dataset.nav === page) link.setAttribute('aria-current', 'page');
@@ -64,6 +64,115 @@ function formatTime(date) {
   return date ? new Date(date).toLocaleString('zh-CN') : '';
 }
 
+function attachCryptoDetails(details) {
+  const panel = document.querySelector('#crypto-template').content.firstElementChild.cloneNode(true);
+  details.append(panel);
+  const query = (selector) => panel.querySelector(selector);
+  const status = query('.crypto-status');
+  const content = query('.crypto-content');
+  let key = '';
+  let loaded = '';
+  let loading = '';
+  let loadDetails;
+
+  async function show() {
+    if (!details.open || !key || loaded === key || loading === key) return;
+    const current = key;
+    loading = current;
+    showNotice(status, '正在校验证书材料…');
+    try {
+      const { request, certificate } = await loadDetails();
+      if (key !== current) return;
+      writeDetails(query('.csr-facts'), {
+        'CSR 主体': request.subject,
+        公钥算法: [request.keyAlgorithm?.toUpperCase(), request.keyBits && request.keyBits + ' 位'].filter(Boolean).join(' '),
+        签名算法: request.signatureAlgorithm,
+        'CSR 签名校验': request.signatureVerified ? '通过' : '失败',
+        '公钥 SHA-256（SPKI）': request.keyFingerprint,
+      });
+      query('.public-pem').textContent = request.publicKey;
+      query('.signature-hex').textContent = request.signatureHex || '未解析出签名值';
+      query('.signed-certificate').hidden = !certificate;
+      if (certificate) {
+        writeDetails(query('.signed-facts'), {
+          签发者: certificate.issuer,
+          '实验 CA 证书指纹': certificate.caFingerprint,
+          证书主体: certificate.subject,
+          生效时间: formatTime(certificate.validFrom),
+          到期时间: formatTime(certificate.validTo),
+          扩展密钥用途: certificate.usage?.map((oid) =>
+            oid === '1.3.6.1.5.5.7.3.2' ? 'TLS 客户端认证（' + oid + '）' : oid).join('、'),
+          'CA 签名校验': certificate.caSignatureVerified ? '通过' : '失败',
+          '证书公钥 SHA-256（SPKI）': certificate.keyFingerprint,
+          'CSR 与证书公钥': certificate.samePublicKey ? '一致' : '不一致',
+        });
+      }
+      loaded = current;
+      content.hidden = false;
+      showNotice(status);
+    } catch (error) {
+      if (key === current) {
+        loaded = current;
+        showNotice(status, '校验证书材料失败：' + error.message + '。重新展开可重试。');
+      }
+    } finally {
+      if (loading === current) loading = '';
+    }
+  }
+
+  details.addEventListener('toggle', () => {
+    if (!details.open && content.hidden) loaded = '';
+    void show();
+  });
+  return (row, token) => {
+    const next = row ? [token, row.id, row.status].join('/') : '';
+    if (key === next) return;
+    key = next;
+    content.hidden = true;
+    showNotice(status);
+    loadDetails = row ? () => api('request-details/' + encodeURIComponent(row.id), { token }) : undefined;
+    void show();
+  };
+}
+
+function renderRevoked(history, rows, token) {
+  history.hidden = rows.length === 0;
+  const list = history.querySelector('ul');
+  const marker = [token, ...rows.map(({ id }) => id)].join('/');
+  if (list.dataset.marker === marker) return;
+  list.dataset.marker = marker;
+  list.replaceChildren(...rows.map((row) => {
+    const item = document.createElement('li');
+    const serial = document.createElement('p');
+    serial.textContent = '序列号 ' + row.serial + ' · 停用于 ' + formatTime(row.revoked_at);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary';
+    button.textContent = '验证旧证书';
+    button.setAttribute('aria-label', '验证旧证书 ' + row.serial);
+    const result = document.createElement('p');
+    result.setAttribute('role', 'status');
+    result.hidden = true;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      showNotice(result, '正在用旧证书发起连接…');
+      try {
+        const probe = await api('probe-revoked', { token, body: { id: row.id } });
+        result.textContent = probe.status === 403 ? 'HTTP 403 · 聊天服务拒绝旧证书'
+          : probe.status === 101 ? 'HTTP 101 · 异常：旧证书仍可接入'
+            : probe.status ? 'HTTP ' + probe.status + ' · 聊天接入失败'
+              : '未完成聊天接入 · ' + probe.code;
+      } catch (error) {
+        result.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    item.append(serial, button, result);
+    return item;
+  }));
+}
+
 function createMember(number) {
   const panel = document.querySelector('#member-template').content.firstElementChild.cloneNode(true);
   const query = (selector) => panel.querySelector(selector);
@@ -72,6 +181,9 @@ function createMember(number) {
   query('.close-client').setAttribute('aria-label', '关闭客户端 ' + number);
   document.querySelector('#members').append(panel);
 
+  const certificateInfo = query('.certificate-info');
+  const renderCrypto = attachCryptoDetails(certificateInfo);
+  const history = query('.revoked-history');
   const auth = query('.auth');
   const form = query('.message-form');
   const notice = query('.notice');
@@ -95,6 +207,10 @@ function createMember(number) {
     identity.textContent = data?.account.username ?? '未登录';
     if (!data) {
       name = '';
+      draftId = '';
+      certificateInfo.open = false;
+      renderCrypto(null, '');
+      renderRevoked(history, [], '');
       return;
     }
     name = data.account.username;
@@ -105,11 +221,13 @@ function createMember(number) {
     const status = query('.certificate-status');
     status.dataset.state = draft ? 'draft' : certificate?.status ?? 'none';
     status.textContent = draft ? 'CSR 待提交' : labels[certificate?.status] ?? '未申请';
-    query('.certificate-info').hidden = !request;
+    certificateInfo.hidden = !request;
+    renderCrypto(request, token);
+    renderRevoked(history, data.revokedHistory, token);
     if (request) {
       writeDetails(query('.certificate-info dl'), {
         申请编号: request.id,
-        证书主体: 'CN=' + request.username,
+        申请账号: request.username,
         'CSR 生成时间': formatTime(draft?.created_at ?? request.csr_created_at),
         提交时间: formatTime(request.requested_at),
         签发时间: formatTime(request.reviewed_at),
@@ -302,6 +420,92 @@ function createMember(number) {
   return { refresh, name: () => name, focus: () => query('.auth input').focus() };
 }
 
+const eventTitles = {
+  csr_generated: '生成 CSR',
+  csr_submitted: '提交证书申请',
+  certificate_issued: '签发证书',
+  certificate_revoked: '停用证书',
+  tls_established: '完成 TLS 握手',
+  tls_rejected: '拒绝 TLS 握手',
+  websocket_admission: '聊天接入检查',
+  message_relayed: '转发消息',
+};
+const evidenceFilter = document.querySelector('#evidence-filter');
+const evidenceTimeline = document.querySelector('#evidence-timeline');
+const evidenceRaw = document.querySelector('#server-events');
+const downloadEvidence = document.querySelector('#download-evidence');
+let records;
+
+function updateTimeline() {
+  if (!records?.length) return;
+  const term = evidenceFilter.value.trim().toLowerCase();
+  const matching = records.filter((event) => {
+    if (!term) return true;
+    if (/^#\d+$/.test(term)) return [event.connection, event.recipientConnection].map(String).includes(term.slice(1));
+    return [event.user, event.from, event.to, event.requestId, event.recipientRequestId, event.fingerprint,
+      event.recipientFingerprint, event.stage, eventTitles[event.stage], event.result, event.code]
+      .some((value) => value?.toLowerCase().includes(term));
+  });
+  document.querySelector('#evidence-count').textContent = '显示 ' + matching.length + ' 条，共 ' + records.length + ' 条';
+  evidenceTimeline.replaceChildren(...matching.map((event) => {
+    const item = document.createElement('li');
+    item.dataset.stage = event.stage;
+    const header = document.createElement('div');
+    header.className = 'section-header';
+    const title = document.createElement('h3');
+    title.textContent = eventTitles[event.stage] ?? event.stage;
+    const time = document.createElement('time');
+    time.dateTime = event.timestamp;
+    time.textContent = formatTime(event.timestamp);
+    header.append(title, time);
+    const detail = document.createElement('dl');
+    writeDetails(detail, {
+      账号: event.stage === 'message_relayed' ? event.from + ' → ' + event.to : event.user,
+      操作人: event.admin,
+      申请编号: event.requestId,
+      收件人申请编号: event.recipientRequestId,
+      证书序列号: event.serial,
+      证书指纹: event.fingerprint,
+      收件人证书指纹: event.recipientFingerprint,
+      连接编号: event.connection && '#' + event.connection,
+      收件人连接: event.recipientConnection && '#' + event.recipientConnection,
+      'TLS 参数': [event.protocol, event.cipher].filter(Boolean).join(' · '),
+      结果: event.status ? 'HTTP ' + event.status + ' · ' + event.result : event.code,
+      消息大小: event.bytes && event.bytes + ' 字节',
+    });
+    item.append(header, detail);
+    return item;
+  }));
+  evidenceRaw.textContent = matching.map((event) => JSON.stringify(event)).join('\n');
+  downloadEvidence.disabled = matching.length === 0;
+}
+
+function renderEvidence(events) {
+  document.querySelector('#evidence-locked').hidden = Boolean(events);
+  document.querySelector('#evidence-empty').hidden = !events || events.length > 0;
+  document.querySelector('#evidence-content').hidden = !events?.length;
+  if (events?.at(-1)?.id === records?.at(-1)?.id && events?.length === records?.length) return;
+  records = events;
+  if (!records?.length) {
+    evidenceTimeline.replaceChildren();
+    evidenceRaw.textContent = '';
+    evidenceFilter.value = '';
+    document.querySelector('.raw-evidence').open = false;
+  }
+  updateTimeline();
+}
+
+evidenceFilter.addEventListener('input', updateTimeline);
+downloadEvidence.addEventListener('click', () => {
+  if (downloadEvidence.disabled || !evidenceRaw.textContent) return;
+  const url = URL.createObjectURL(new Blob([evidenceRaw.textContent + '\n'], { type: 'application/x-ndjson' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'authentication-evidence.ndjson';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
 function createAdmin() {
   const login = document.querySelector('#admin-login');
   const content = document.querySelector('#admin-content');
@@ -322,16 +526,16 @@ function createAdmin() {
     login.hidden = Boolean(data);
     content.hidden = !data;
     status.textContent = data ? '管理员已登录' : '未登录';
-    const events = document.querySelector('#server-events');
     const pendingCount = document.querySelector('#pending-count');
     const pending = data?.requests.filter((row) => row.status === 'pending').length ?? 0;
     pendingCount.textContent = String(pending);
     pendingCount.hidden = pending === 0;
-    document.querySelector('#evidence-locked').hidden = Boolean(data);
-    document.querySelector('#evidence-empty').hidden = !data || data.evidence.length > 0;
-    events.hidden = !data || data.evidence.length === 0;
-    events.textContent = data?.evidence.slice().reverse().map((event) => JSON.stringify(event)).join('\n') ?? '';
-    if (!data) return;
+    renderEvidence(data?.evidence ?? null);
+    if (!data) {
+      list.replaceChildren();
+      delete list.dataset.marker;
+      return;
+    }
     const marker = JSON.stringify(data.requests.map(({ id, status }) => [id, status]));
     if (marker === list.dataset.marker) return;
     list.dataset.marker = marker;
@@ -358,7 +562,12 @@ function createAdmin() {
       });
       const csr = document.createElement('pre');
       csr.textContent = row.csr;
-      details.append(summary, facts, csr);
+      const original = document.createElement('details');
+      const originalLabel = document.createElement('summary');
+      originalLabel.textContent = 'PKCS#10 证书签名请求';
+      original.append(originalLabel, csr);
+      details.append(summary, facts, original);
+      attachCryptoDetails(details)(row, token);
       if (row.status !== 'revoked') {
         const button = document.createElement('button');
         button.type = 'button';
@@ -503,6 +712,14 @@ document.querySelector('#add-client').addEventListener('click', () => {
   const client = addClient(nextClient++);
   saveLayout();
   client.focus();
+});
+
+document.querySelector('#start-experiment').addEventListener('click', () => {
+  while (clientSlots.size < 2) addClient(nextClient++);
+  saveLayout();
+  location.hash = 'clients';
+  showPage();
+  document.querySelector('#client-heading').focus({ preventScroll: true });
 });
 
 const refreshAdmin = createAdmin();

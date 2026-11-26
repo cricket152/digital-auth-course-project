@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { randomBytes, X509Certificate } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash, createPublicKey, randomBytes, X509Certificate } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setupPki } from '../prototype/setup-pki.ts';
@@ -11,18 +12,29 @@ export function openPki(runtime: string) {
   const localClients = join(runtime, 'clients');
   mkdirSync(localClients, { recursive: true, mode: 0o700 });
 
+  const opensslOptions = {
+    cwd: directory,
+    encoding: 'utf8' as const,
+    env: { ...process.env, OPENSSL_CONF: join(directory, 'openssl.cnf') },
+    windowsHide: true,
+  };
+
   function openssl(args: string[], input?: string): string {
-    return execFileSync('openssl', args, {
-      cwd: directory,
-      input,
-      encoding: 'utf8',
-      env: { ...process.env, OPENSSL_CONF: join(directory, 'openssl.cnf') },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    return execFileSync('openssl', args, { ...opensslOptions, input, stdio: 'pipe' });
+  }
+
+  function verifyCsr(csr: string): boolean {
+    const result = spawnSync('openssl', ['req', '-verify', '-noout'], { ...opensslOptions, input: csr });
+    if (result.error) throw result.error;
+    return result.status === 0 && /self-signature verify OK/.test(result.stdout + result.stderr);
+  }
+
+  function publicKeyFingerprint(key: KeyObject): string {
+    return createHash('sha256').update(key.export({ format: 'der', type: 'spki' })).digest('hex');
   }
 
   const ca = readFileSync(join(directory, 'ca.crt'));
+  const issuer = new X509Certificate(ca);
   const server = {
     cert: readFileSync(join(directory, 'server.crt')),
     key: readFileSync(join(directory, 'server.key')),
@@ -55,14 +67,40 @@ export function openPki(runtime: string) {
       ]);
       return { id, csr };
     },
+    describe(csr: string, pem?: string | null) {
+      const publicKey = openssl(['req', '-pubkey', '-noout'], csr).trim();
+      const text = openssl(['req', '-text', '-noout', '-subject', '-nameopt', 'RFC2253'], csr);
+      const key = createPublicKey(publicKey);
+      const keyFingerprint = publicKeyFingerprint(key);
+      const certificate = pem ? new X509Certificate(pem) : null;
+      return {
+        request: {
+          subject: text.match(/^subject\s*=\s*(.+)$/mi)?.[1].trim(),
+          keyAlgorithm: key.asymmetricKeyType,
+          keyBits: key.asymmetricKeyDetails?.modulusLength,
+          publicKey,
+          keyFingerprint,
+          signatureAlgorithm: text.match(/^\s*Signature Algorithm:\s*(.+)$/m)?.[1].trim(),
+          signatureHex: text.match(/Signature Value:\s*((?:[0-9a-f]{2}[:\s]*)+)/i)?.[1].replace(/[:\s]/g, ''),
+          signatureVerified: verifyCsr(csr),
+        },
+        certificate: certificate && {
+          issuer: certificate.issuer, caFingerprint: issuer.fingerprint256, subject: certificate.subject, serial: certificate.serialNumber,
+          validFrom: certificate.validFromDate.toISOString(), validTo: certificate.validToDate.toISOString(),
+          usage: certificate.keyUsage, fingerprint: certificate.fingerprint256,
+          keyFingerprint: publicKeyFingerprint(certificate.publicKey),
+          samePublicKey: key.equals(certificate.publicKey),
+          caSignatureVerified: certificate.checkIssued(issuer) && certificate.verify(issuer.publicKey),
+        },
+      };
+    },
     issue(request: CertificateRequest) {
-      openssl(['req', '-verify', '-noout'], request.csr);
+      if (!verifyCsr(request.csr)) throw new Error('CSR 签名校验失败。');
       const pem = openssl([
         'x509', '-req', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-extfile', profile,
         '-sha256', '-days', '7', '-set_serial', '0x01' + randomBytes(15).toString('hex'),
       ], request.csr);
       const cert = new X509Certificate(pem);
-      const issuer = new X509Certificate(ca);
       if (cert.subject !== 'CN=' + request.username || !cert.checkIssued(issuer) || !cert.verify(issuer.publicKey)) {
         throw new Error('签发证书的身份或签名检查失败。');
       }

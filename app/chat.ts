@@ -5,6 +5,13 @@ type Message = { from: string; to: string; text: string; time: string };
 type ChatState = { phase: 'offline' | 'connecting' | 'online' | 'rejected'; detail: string; messages: Message[] };
 
 export function openClients(origin: string, ca: Buffer, privateKey: (id: string) => Buffer) {
+  const chatUrl = origin.replace('https:', 'wss:') + '/chat';
+  function dial(id: string, certificate: string) {
+    return new WebSocket(chatUrl, {
+      ca, cert: certificate, key: privateKey(id), origin, handshakeTimeout: 4000,
+    });
+  }
+
   const sessions = new Map<string, { state: ChatState; socket?: WebSocket }>();
   function actor(username: string) {
     let client = sessions.get(username);
@@ -21,9 +28,7 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
     connect(request: CertificateRequest): void {
       const client = actor(request.username);
       if (!request.pem || client.socket) return;
-      const socket = new WebSocket(origin.replace('https:', 'wss:') + '/chat', {
-        ca, cert: request.pem, key: privateKey(request.id), origin, handshakeTimeout: 4000,
-      });
+      const socket = dial(request.id, request.pem);
       client.socket = socket;
       client.state.phase = 'connecting';
       client.state.detail = '正在进行双向 TLS 握手';
@@ -68,6 +73,23 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
         } else if (message.type === 'error') {
           client.state.detail = message.code === 'peer_offline' ? '对方未连接' : '消息未发出';
         }
+      });
+    },
+    probe(id: string, certificate: string) {
+      return new Promise<{ stage: 'connection' | 'application'; status: number | null; code: string }>((resolve) => {
+        const socket = dial(id, certificate);
+        socket.once('unexpected-response', (_request, response) => {
+          resolve({ stage: 'application', status: response.statusCode ?? null, code: 'http_response' });
+          response.resume();
+          socket.terminate();
+        });
+        socket.once('open', () => {
+          resolve({ stage: 'application', status: 101, code: 'unexpected_admission' });
+          socket.close();
+        });
+        socket.once('error', (error: NodeJS.ErrnoException) => {
+          resolve({ stage: 'connection', status: null, code: error.code ?? 'connection_error' });
+        });
       });
     },
     disconnect(username: string, detail: string): void {

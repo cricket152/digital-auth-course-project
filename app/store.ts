@@ -110,6 +110,14 @@ export function openStore(directory: string) {
     list(): CertificateRequest[] {
       return db.prepare(requestDetails + ' ORDER BY requests.rowid DESC').all() as CertificateRequest[];
     },
+    revokedHistory(username: string) {
+      return db.prepare("SELECT id, serial, revoked_at FROM requests WHERE username = ? AND status = 'revoked' ORDER BY rowid DESC")
+        .all(username) as { id: string; serial: string; revoked_at: string }[];
+    },
+    certificateReference(fingerprint: string) {
+      return db.prepare('SELECT id, username FROM requests WHERE fingerprint = ?')
+        .get(fingerprint) as { id: string; username: string } | undefined;
+    },
     draft(username: string): CertificateDraft | undefined {
       return activeDraft.get(username) as CertificateDraft | undefined;
     },
