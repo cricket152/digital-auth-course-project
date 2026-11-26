@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>双向 TLS 聊天验证</title>
+  <script src="/chat.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>双向 TLS 聊天验证</h1>
+    <p id="status" role="status">正在验证客户端证书…</p>
+    <button id="reconnect" type="button">重试连接</button>
+    <form id="message-form">
+      <label for="message">消息</label>
+      <input id="message" name="message" maxlength="1000" required disabled>
+      <button id="send" type="submit" disabled>发送</button>
+    </form>
+    <ul id="messages" aria-label="消息记录" aria-live="polite"></ul>
+  </main>
+</body>
+</html>

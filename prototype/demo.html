@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>双向 TLS 聊天演示</title>
+  <link rel="stylesheet" href="/demo.css">
+  <script src="/demo.js" defer></script>
+</head>
+<body>
+  <main class="workspace">
+    <header class="page-header">
+      <div>
+        <h1>双向 TLS 聊天演示</h1>
+        <p>在同一页操作两个客户端，验证证书认证和消息收发。</p>
+      </div>
+      <span id="connection-summary" class="badge" role="status">正在连接演示服务…</span>
+    </header>
+
+    <div class="chat-grid">
+      <section class="chat" data-user="alice" aria-labelledby="alice-heading">
+        <header class="chat-header">
+          <span class="avatar" aria-hidden="true">A</span>
+          <div class="client-name">
+            <h2 id="alice-heading">Alice</h2>
+            <p class="identity">客户端证书</p>
+          </div>
+          <span class="badge client-status" role="status">正在连接</span>
+        </header>
+        <ol class="messages" aria-label="Alice 的消息" aria-live="polite"></ol>
+        <p class="client-error" role="status" hidden></p>
+        <form class="composer">
+          <label class="sr-only" for="alice-message">Alice 的消息</label>
+          <input id="alice-message" name="message" maxlength="1000" placeholder="发给 Bob" required disabled>
+          <button type="submit" aria-label="Alice 发送" disabled>发送</button>
+        </form>
+      </section>
+
+      <section class="chat" data-user="bob" aria-labelledby="bob-heading">
+        <header class="chat-header">
+          <span class="avatar avatar-bob" aria-hidden="true">B</span>
+          <div class="client-name">
+            <h2 id="bob-heading">Bob</h2>
+            <p class="identity">客户端证书</p>
+          </div>
+          <span class="badge client-status" role="status">正在连接</span>
+        </header>
+        <ol class="messages" aria-label="Bob 的消息" aria-live="polite"></ol>
+        <p class="client-error" role="status" hidden></p>
+        <form class="composer">
+          <label class="sr-only" for="bob-message">Bob 的消息</label>
+          <input id="bob-message" name="message" maxlength="1000" placeholder="发给 Alice" required disabled>
+          <button type="submit" aria-label="Bob 发送" disabled>发送</button>
+        </form>
+      </section>
+    </div>
+
+    <section class="checks" aria-labelledby="checks-heading">
+      <h2 id="checks-heading">认证测试</h2>
+      <div class="checks-grid">
+        <div class="check">
+          <h3>无客户端证书</h3>
+          <p id="missing-result" class="check-result" role="status">发起一次没有客户端证书的连接。</p>
+          <button id="verify-missing" class="secondary" disabled>验证无证书</button>
+        </div>
+        <div class="check">
+          <h3>证书停用</h3>
+          <p id="revoked-result" class="check-result" role="status">停用 Bob 的证书后尝试重新接入。</p>
+          <button id="toggle-bob" class="secondary" disabled>停用 Bob 并重连</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="evidence" id="evidence" aria-labelledby="evidence-heading">
+      <div class="evidence-heading">
+        <div>
+          <h2 id="evidence-heading">认证过程与服务端证据</h2>
+          <p>展开记录查看证书指纹、TLS 参数和接入结果。连接编号可关联同一次握手、接入和消息转发。</p>
+        </div>
+        <a href="/evidence.ndjson" download>下载原始日志</a>
+      </div>
+      <ol id="evidence-list" class="trace-list" aria-label="认证与消息事件"></ol>
+    </section>
+
+    <footer>本机演示服务持测试证书与聊天服务器建立两条独立的 mTLS 连接。</footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "digital-auth-course-project",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "pki:setup": "node prototype/setup-pki.ts",
+    "pki:status": "node prototype/set-status.ts",
+    "start": "node prototype/main.ts",
+    "demo": "node prototype/demo.ts",
+    "app": "node app/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node --test prototype/chat.test.ts app/lifecycle.test.ts"
+  },
+  "dependencies": {
+    "ws": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
+    "typescript": "6.0.3"
+  }
+}

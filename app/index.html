@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数字认证实验台</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="实验台导航">
+      <a class="brand" href="#clients">数字认证实验台</a>
+      <nav class="side-nav" aria-label="主要导航">
+        <a href="#clients" data-nav="clients" aria-current="page">客户端与聊天 <span id="client-count"></span></a>
+        <a href="#admin" data-nav="admin">证书审批 <span id="pending-count" hidden></span></a>
+        <a href="#tls" data-nav="tls">TLS 对照</a>
+        <a href="#evidence" data-nav="evidence">认证记录</a>
+      </nav>
+    </aside>
+
+    <main class="workspace">
+      <section id="clients" data-page aria-labelledby="client-heading">
+        <header class="view-header">
+          <div>
+            <h1 id="client-heading">客户端与聊天</h1>
+            <p>为每个客户端登录独立账号。证书签发后，连接并选择在线收件人。</p>
+          </div>
+          <button id="add-client" type="button">＋ 添加客户端</button>
+        </header>
+        <p id="empty-clients" class="card" hidden>当前没有客户端，点击「添加客户端」开始。</p>
+        <div id="members" class="members" aria-label="客户端列表"></div>
+      </section>
+    <template id="member-template">
+      <section class="card member">
+        <header class="section-header">
+          <h2 class="lane-title"></h2>
+          <div class="panel-actions">
+            <span class="identity badge">未登录</span>
+            <button type="button" class="secondary close-client">关闭</button>
+          </div>
+        </header>
+        <form class="auth">
+          <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="24" required></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
+          <div class="buttons"><button data-action="register" type="submit">注册</button><button data-action="login" class="secondary" type="submit">登录</button></div>
+        </form>
+        <div class="member-content" hidden>
+          <div class="certificate">
+            <div class="section-header"><h3>客户端证书</h3><span class="certificate-status badge">未申请</span></div>
+            <ol class="certificate-steps" aria-label="证书申请进度">
+              <li data-step="generate"><strong>生成密钥与 CSR</strong><span></span></li>
+              <li data-step="submit"><strong>提交证书申请</strong><span></span></li>
+              <li data-step="review"><strong>管理员审批与签发</strong><span></span></li>
+              <li data-step="connect"><strong>持证连接聊天</strong><span></span></li>
+            </ol>
+            <details class="certificate-info" hidden>
+              <summary>查看申请与证书信息</summary>
+              <dl></dl>
+              <details><summary>PKCS#10 证书签名请求</summary><pre class="csr"></pre></details>
+            </details>
+            <div class="buttons certificate-actions">
+              <button type="button" class="generate">生成 CSR</button>
+              <button type="button" class="request" hidden>提交证书申请</button>
+              <button type="button" class="download secondary" hidden>下载证书</button>
+              <a class="review-link" href="#admin" hidden>打开审批页</a>
+            </div>
+          </div>
+          <div class="chat">
+            <div class="section-header">
+              <h3>持证聊天</h3>
+              <button type="button" class="connect secondary" disabled>连接</button>
+            </div>
+            <p class="chat-status" role="status">等待证书签发</p>
+            <ol class="messages" aria-label="聊天记录" aria-live="polite"></ol>
+            <form class="message-form">
+              <label>收件人<select name="to" required disabled><option value="">等待对方连接</option></select></label>
+              <label>消息<input name="text" placeholder="输入消息" maxlength="1000" required disabled></label>
+              <button type="submit" disabled>发送</button>
+            </form>
+          </div>
+          <button type="button" class="logout secondary">退出账号</button>
+        </div>
+        <p class="notice" role="status" hidden></p>
+      </section>
+    </template>
+
+    <section id="admin" data-page aria-labelledby="admin-heading" hidden>
+      <header class="view-header">
+        <div><h1 id="admin-heading">证书审批</h1><p>查看申请内容，签发或停用客户端证书。</p></div>
+        <span id="admin-status" class="badge">未登录</span>
+      </header>
+      <div class="card">
+      <form id="admin-login" class="admin-form">
+        <label>管理员密码<input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
+        <button type="submit">登录管理员</button>
+        <p>管理员账号为 admin，初始密码文件路径见启动终端。</p>
+      </form>
+      <div id="admin-content" hidden>
+        <ul id="requests"></ul>
+        <button id="admin-logout" class="secondary" type="button">退出管理员</button>
+      </div>
+      <p id="admin-notice" class="notice" role="status" hidden></p>
+      </div>
+    </section>
+
+    <section id="evidence" data-page aria-labelledby="evidence-heading" hidden>
+      <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>按连接编号核对握手、证书状态检查和消息转发。</p></div></header>
+      <div class="card">
+        <p id="evidence-locked">请先在<a href="#admin">证书审批</a>登录管理员。</p>
+        <p id="evidence-empty" hidden>当前还没有连接记录。让客户端持证连接后，记录会显示在这里。</p>
+        <pre id="server-events" hidden aria-label="后端连接记录"></pre>
+      </div>
+    </section>
+
+    <section id="tls" data-page aria-labelledby="tls-heading" hidden>
+      <header class="view-header">
+        <div><h1 id="tls-heading">TLS 与信任对照</h1><p>发起实际连接，比较单向、双向 TLS 和自签名证书的信任结果。</p></div>
+        <button id="compare" type="button">运行对照</button>
+      </header>
+      <div class="card">
+      <p id="compare-status" class="notice" role="status" hidden></p>
+      <div class="results-scroll"><table id="comparison" hidden>
+        <thead><tr><th>场景</th><th>预期</th><th>实测</th><th>结果</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      </div>
+    </section>
+      <footer>本机客户端代理持证连接聊天服务。实验私钥保存在本机运行目录。</footer>
+    </main>
+  </div>
+</body>
+</html>
