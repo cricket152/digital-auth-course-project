@@ -208,6 +208,7 @@ export function createChatServer(
         }
       });
       client.on('message', (data, isBinary) => {
+        if (client.readyState !== WebSocket.OPEN) return;
         const message = isBinary ? undefined : parseMessage(data.toString(), mode);
         if (!message || message.to === user) {
           send(client, { type: 'error', code: 'invalid_message' });
@@ -245,5 +246,13 @@ export function createChatServer(
       send(client, { type: 'ready', user });
     });
   });
-  return { server, webSockets };
+  return {
+    server, webSockets,
+    onlineUsers: () => [...sockets].filter(([, connection]) => connection.client.readyState === WebSocket.OPEN)
+      .map(([user]) => user),
+    disconnectCertificate(user: string, fingerprint: string) {
+      const connection = sockets.get(user);
+      if (connection?.fingerprint === fingerprint) connection.client.close(4003, 'certificate_revoked');
+    },
+  };
 }

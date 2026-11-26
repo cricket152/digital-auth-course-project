@@ -51,10 +51,16 @@ function visibleRequest(row?: CertificateRequest) {
 }
 
 const host = '127.0.0.1';
-const port = Number(process.env.COURSE_PORT ?? 18446);
-if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('COURSE_PORT 必须是有效端口。');
+const standalone = process.argv.includes('--standalone');
+function localPort(value: string | number, name: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(name + ' 必须是有效端口。');
+  return port;
+}
+const port = localPort(process.env.COURSE_PORT ?? (standalone ? 18447 : 18446), 'COURSE_PORT');
+const apiPort = standalone ? localPort(process.env.COURSE_API_PORT ?? 18448, 'COURSE_API_PORT') : 0;
 const origin = new URL('http://' + host + ':' + port);
-const runtime = resolve(process.env.COURSE_RUNTIME_DIR ?? '.prototype/course-app');
+const runtime = resolve(process.env.COURSE_RUNTIME_DIR ?? (standalone ? '.prototype/course-server' : '.prototype/course-app'));
 if (process.platform !== 'win32') process.umask(0o077);
 mkdirSync(runtime, { recursive: true, mode: 0o700 });
 const store = openStore(runtime);
@@ -87,9 +93,10 @@ function observe(event: EvidenceEvent): void {
   if (evidence.length > 80) evidence.shift();
   console.log(JSON.stringify(entry));
 }
-const { server: mutualServer } = createChatServer(pki.directory, [host], observe, store.identity, 'sealed');
+const { server: mutualServer, disconnectCertificate, onlineUsers } =
+  createChatServer(pki.directory, [host], observe, store.identity, 'sealed');
 const mutualOrigin = await listenLocal(mutualServer);
-const clients = openClients(mutualOrigin, pki.ca, pki.clientKey);
+const clients = standalone ? undefined : openClients(mutualOrigin, pki.ca, pki.clientKey);
 let secureOrigin: URL | undefined;
 let compare: Awaited<ReturnType<typeof createComparison>>;
 const sessions = new Map<string, { account: Account; expires: number }>();
@@ -141,7 +148,8 @@ function adminAction(account: Account, route: string, body: Record<string, unkno
     if (!store.revoke(row.id)) throw new HttpError(409, '只能停用已签发的证书。');
     observe({ stage: 'certificate_revoked', requestId: row.id, user: row.username, admin: account.username,
       serial: row.serial ?? undefined, fingerprint: row.fingerprint ?? undefined });
-    clients.disconnect(row.username, '管理员已停用证书，现有聊天连接已关闭。');
+    clients?.disconnect(row.username, '管理员已停用证书，现有聊天连接已关闭。');
+    if (row.fingerprint) disconnectCertificate(row.username, row.fingerprint);
   }
   return { certificate: visibleRequest(store.get(row.id)) };
 }
@@ -150,6 +158,23 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
   if (account.role !== 'member') throw new HttpError(403, '请用普通用户执行此操作。');
   const { username } = account;
   const current = store.current(username);
+  if (standalone && route === '/api/external-request') {
+    const { id, csr } = body;
+    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id) || typeof csr !== 'string') {
+      throw new HttpError(400, '请提交申请编号和 PKCS#10 CSR。');
+    }
+    if (current && current.status !== 'revoked') {
+      if (id === current.id && csr === current.csr) return { certificate: visibleRequest(current) };
+      throw new HttpError(409, '已有等待审批或有效的证书。');
+    }
+    if (!pki.acceptsRequest(csr, username)) {
+      throw new HttpError(400, 'CSR 格式、签名、公钥或申请主体不符合要求。');
+    }
+    if (!store.submitRequest(id, username, csr)) throw new HttpError(409, '证书申请编号已使用。');
+    observe({ stage: 'csr_submitted', requestId: id, user: username });
+    return { certificate: visibleRequest(store.get(id)) };
+  }
+  if (!clients) throw new HttpError(409, '请在独立客户端终端申请证书或进行聊天。');
   if (route === '/api/csr' || route === '/api/request') {
     if (current && current.status !== 'revoked') throw new HttpError(409, '已有等待审批或有效的证书。');
     let draft = store.draft(username);
@@ -198,8 +223,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
         ? { account, requests: store.list().map(visibleRequest), evidence }
         : {
             account, certificate: visibleRequest(store.current(account.username)), draft: store.draft(account.username) ?? null,
-            chat: clients.state(account.username), revokedHistory: store.revokedHistory(account.username),
-            peers: clients.online().filter((user) => user !== account.username),
+            chat: clients?.state(account.username) ?? { phase: 'offline', detail: '请使用独立客户端终端。', messages: [], secure: {} },
+            revokedHistory: store.revokedHistory(account.username),
+            peers: (clients?.online() ?? onlineUsers()).filter((user) => user !== account.username),
+            ...(standalone ? { chatOrigin: mutualOrigin, adminOrigin: origin.origin } : {}),
           };
       reply(response, 200, state);
       return;
@@ -231,6 +258,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
   }
   if (request.method !== 'POST') throw new HttpError(405, '此请求方法不可用。');
   if (request.headers.origin !== expectedOrigin) throw new HttpError(403, '请求来源无效。');
+  if (route === '/api/external-request' && !expectedOrigin.startsWith('https:')) {
+    throw new HttpError(403, '独立客户端须通过 HTTPS 提交 CSR。');
+  }
   const body = await readBody(request);
   if (route === '/api/login' || route === '/api/register') {
     reply(response, route === '/api/register' ? 201 : 200, registerOrLogin(route, body));
@@ -245,11 +275,12 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     sessions.delete(tokenFor(request));
     const stillSignedIn = [...sessions.values()].some((session) =>
       session.account.username === account.username && session.expires > Date.now());
-    if (account.role === 'member' && !stillSignedIn) clients.disconnect(account.username, '账号已退出。');
+    if (account.role === 'member' && !stillSignedIn) clients?.disconnect(account.username, '账号已退出。');
     reply(response, 200, { ok: true });
     return;
   }
   if (route === '/api/probe-revoked') {
+    if (!clients) throw new HttpError(409, '请在独立客户端终端持旧证书重连。');
     const row = typeof body.id === 'string' ? store.get(body.id) : undefined;
     if (!row || row.username !== account.username || row.status !== 'revoked' || !row.pem) {
       throw new HttpError(404, '找不到当前账号的已停用证书。');
@@ -259,7 +290,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
   }
   const result = route === '/api/approve' || route === '/api/revoke'
     ? adminAction(account, route, body) : memberAction(account, route, body);
-  reply(response, route === '/api/csr' || route === '/api/request' ? 201 : 200, result);
+  reply(response, ['/api/csr', '/api/request', '/api/external-request'].includes(route) ? 201 : 200, result);
 }
 
 const assets = new Map<string, { file: string; type: string }>([
@@ -301,11 +332,13 @@ function serveWeb(request: IncomingMessage, response: ServerResponse): void {
     reply(response, 404, { error: '页面不存在。' });
     return;
   }
-  response.writeHead(200, { 'Content-Type': asset.type }).end(readFileSync(new URL(asset.file, import.meta.url)));
+  const content = readFileSync(new URL(asset.file, import.meta.url), 'utf8');
+  response.writeHead(200, { 'Content-Type': asset.type })
+    .end(standalone && route === '/' ? content.replace('<body>', '<body data-standalone>') : content);
 }
 
 const secureWeb = createHttpsServer({ ...pki.server, requestCert: false, minVersion: 'TLSv1.2' }, serveWeb);
-secureOrigin = new URL(await listenLocal(secureWeb));
+secureOrigin = new URL(await listenLocal(secureWeb, apiPort));
 compare = await createComparison(pki, mutualOrigin, secureOrigin.origin);
 const web = createServer(serveWeb);
 web.listen(port, host, () => {
@@ -314,6 +347,11 @@ web.listen(port, host, () => {
   console.log('数字认证课程应用：' + origin.href);
   console.log('单向 TLS 门户：' + secureOrigin?.href);
   console.log('管理员账号：admin。初始密码文件：' + store.adminPasswordPath);
+  if (standalone) {
+    console.log('独立客户端 HTTPS：' + secureOrigin?.origin);
+    console.log('聊天中转 WSS：' + mutualOrigin.replace('https:', 'wss:') + '/chat');
+    console.log('实验 CA 公共证书：' + resolve(pki.directory, 'ca.crt'));
+  }
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

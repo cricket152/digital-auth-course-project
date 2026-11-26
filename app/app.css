@@ -194,6 +194,24 @@ pre { border: 1px solid var(--border); border-radius: 7px; background: var(--sur
 .message-participant { color: var(--accent-text); font-size: 12px; font-weight: 650; }
 .message-form { display: grid; grid-template-columns: minmax(96px, 1fr) minmax(100px, 2fr) auto; align-items: end; gap: 6px; }
 
+.local-client { max-width: 1300px; margin-inline: auto; }
+.local-client > .notice { margin: 0 0 12px; }
+.local-client > .notice:last-child { margin: 10px 0 0; }
+.local-client-grid { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(0, 2fr); gap: 14px; }
+.local-client-column, .local-client-section { display: grid; gap: 10px; align-content: start; }
+.local-client-section > button { justify-self: start; }
+.local-client-section .chat-status { margin: 0; }
+.local-client-section .messages { margin: 0; height: clamp(220px, 44vh, 500px); }
+.local-client-section:has(> details[open]) .messages { height: clamp(150px, calc(100dvh - 495px), 380px); }
+.local-client-section .messages li { white-space: pre-wrap; }
+.local-client-section .messages details { margin-top: 4px; }
+.local-client-section .local-empty-messages { color: var(--muted); background: transparent; }
+.local-peer-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+@media (max-width: 760px) {
+  .local-client-grid { grid-template-columns: minmax(0, 1fr); }
+  .local-client-section .messages { height: clamp(150px, 25vh, 260px); }
+}
+
 .admin-form { grid-template-columns: minmax(130px, 280px) auto; align-items: end; justify-content: start; margin-top: 0; }
 .admin-form p, footer { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .admin-form p { grid-column: 1 / -1; }

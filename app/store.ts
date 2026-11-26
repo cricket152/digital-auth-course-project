@@ -137,6 +137,9 @@ export function openStore(directory: string) {
           insertRequest.run(current.id, current.username, current.csr, new Date().toISOString()).changes === 1;
       });
     },
+    submitRequest(id: string, username: string, csr: string): boolean {
+      return insertRequest.run(id, username, csr, new Date().toISOString()).changes === 1;
+    },
     approve(id: string, issued: { pem: string; fingerprint: string; serial: string; expiresAt: string }): boolean {
       return db.prepare(
         "UPDATE requests SET status = 'issued', pem = ?, fingerprint = ?, serial = ?, expires_at = ?, reviewed_at = ? " +

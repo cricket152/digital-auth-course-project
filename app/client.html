@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>独立客户端 · 数字认证实验台</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/client.js" defer></script>
+</head>
+<body>
+  <main class="workspace local-client">
+    <header class="view-header">
+      <div>
+        <h1 id="client-title">独立客户端</h1>
+        <p id="client-process"></p>
+      </div>
+      <nav class="buttons" aria-label="服务端">
+        <a id="open-admin" target="_blank" rel="noopener" hidden>证书审批</a>
+        <a id="open-evidence" target="_blank" rel="noopener" hidden>认证记录</a>
+      </nav>
+    </header>
+    <p id="client-unavailable" class="notice" role="status" hidden></p>
+    <div class="local-client-grid">
+      <div class="local-client-column">
+        <section class="card local-client-section" aria-labelledby="certificate-heading">
+          <div class="section-header">
+            <h2 id="certificate-heading">客户端证书</h2>
+            <span id="client-certificate-status" class="badge">正在读取</span>
+          </div>
+          <p id="certificate-help" class="chat-status"></p>
+          <details id="client-certificate-details" hidden>
+            <summary>证书信息</summary>
+            <dl id="client-certificate-fields"></dl>
+          </details>
+          <button id="client-request" type="button" disabled>生成 CSR 并申请</button>
+        </section>
+        <section class="card local-client-section" aria-labelledby="connection-heading">
+          <div class="section-header">
+            <h2 id="connection-heading">双向 TLS</h2>
+            <span id="connection-status" class="badge">离线</span>
+          </div>
+          <p id="connection-detail" class="chat-status" role="status"></p>
+          <div class="buttons">
+            <button id="client-connect" type="button" disabled>持证连接</button>
+            <button id="client-disconnect" class="secondary" type="button" disabled>断开连接</button>
+          </div>
+        </section>
+      </div>
+      <section class="card local-client-section" aria-labelledby="private-chat-heading">
+        <div class="section-header">
+          <h2 id="private-chat-heading">加密聊天</h2>
+          <span id="session-status" class="badge">未协商</span>
+        </div>
+        <div class="local-peer-form">
+          <label for="chat-peer">在线收件人<select id="chat-peer" disabled><option value="">等待对方上线</option></select></label>
+          <button id="client-negotiate" class="secondary" type="button" disabled>协商会话密钥</button>
+        </div>
+        <details id="local-session-details" hidden>
+          <summary>密钥协商记录</summary>
+          <dl id="local-session-fields"></dl>
+        </details>
+        <ul id="local-messages" class="messages" aria-label="消息记录" role="log"></ul>
+        <form id="local-send-form" class="local-peer-form">
+          <label for="local-message">消息<input id="local-message" name="message" maxlength="1000" autocomplete="off" required disabled></label>
+          <button id="client-send" type="submit" disabled>加密发送</button>
+        </form>
+      </section>
+    </div>
+    <p id="client-feedback" class="notice" role="status" hidden></p>
+  </main>
+</body>
+</html>

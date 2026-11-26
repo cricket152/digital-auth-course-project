@@ -22,6 +22,10 @@
             <button id="add-client" class="secondary" type="button">＋ 添加客户端</button>
           </div>
           <div id="client-links" class="client-links"></div>
+          <div id="standalone-links" class="client-links" hidden>
+            <a href="http://127.0.0.1:18450/" target="_blank" rel="noopener">Alice 客户端</a>
+            <a href="http://127.0.0.1:18451/" target="_blank" rel="noopener">Bob 客户端</a>
+          </div>
         </section>
       </nav>
     </aside>
@@ -47,6 +51,10 @@
           <h1 id="client-heading" tabindex="-1">客户端与聊天</h1>
         </header>
         <p id="empty-clients" class="card" hidden>当前没有客户端，点击侧栏的「添加客户端」开始。</p>
+        <div id="standalone-clients" class="card" hidden>
+          <p>从侧栏打开 Alice、Bob 的本机网页。每个页面由对应客户端进程提供。</p>
+          <p>如果页面暂未打开，请先启动对应客户端，并使用终端打印的网页地址。</p>
+        </div>
         <div id="members"></div>
       </section>
     <template id="member-template">

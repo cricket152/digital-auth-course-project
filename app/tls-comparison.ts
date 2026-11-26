@@ -5,8 +5,8 @@ import { once } from 'node:events';
 
 const host = '127.0.0.1';
 
-export async function listenLocal(server: Server): Promise<string> {
-  server.listen(0, host);
+export async function listenLocal(server: Server, port = 0): Promise<string> {
+  server.listen(port, host);
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('未取得 TLS 对照服务端口。');

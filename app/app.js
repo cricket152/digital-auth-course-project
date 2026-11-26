@@ -46,6 +46,7 @@ const clientSlots = new Map();
 const clientHeading = document.querySelector('#client-heading');
 const addClientButton = document.querySelector('#add-client');
 const clientLinks = document.querySelector('#client-links');
+const standalone = document.body.hasAttribute('data-standalone');
 let selectedClient;
 
 function showPage() {
@@ -53,7 +54,7 @@ function showPage() {
   const clientRoute = /^client-(\d+)$/.exec(fragment);
   const clientPage = fragment === 'clients' || Boolean(clientRoute);
   const page = clientPage ? 'clients' : pages.some(({ id }) => id === fragment) ? fragment : 'start';
-  if (clientPage) {
+  if (clientPage && !standalone) {
     const requested = Number(clientRoute?.[1]);
     if (clientSlots.has(requested)) selectedClient = requested;
     if (!clientSlots.has(selectedClient)) selectedClient = clientSlots.keys().next().value;
@@ -807,7 +808,7 @@ function savedLayout() {
   return { ids: [1, 2], next: 3 };
 }
 
-const saved = savedLayout();
+const saved = standalone ? { ids: [], next: 1 } : savedLayout();
 let nextClient = saved.next;
 
 function saveLayout() {
@@ -822,8 +823,14 @@ function addClient(number) {
   return client;
 }
 
-for (const number of saved.ids) addClient(number);
-saveLayout();
+if (standalone) {
+  addClientButton.hidden = true;
+  document.querySelector('#standalone-links').hidden = false;
+  document.querySelector('#standalone-clients').hidden = false;
+} else {
+  for (const number of saved.ids) addClient(number);
+  saveLayout();
+}
 showPage();
 addClientButton.addEventListener('click', () => {
   const client = addClient(nextClient++);
@@ -834,8 +841,10 @@ addClientButton.addEventListener('click', () => {
 });
 
 document.querySelector('#start-experiment').addEventListener('click', () => {
-  while (clientSlots.size < 2) addClient(nextClient++);
-  saveLayout();
+  if (!standalone) {
+    while (clientSlots.size < 2) addClient(nextClient++);
+    saveLayout();
+  }
   location.hash = 'clients';
   showPage();
   clientHeading.focus({ preventScroll: true });

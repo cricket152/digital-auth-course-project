@@ -2,7 +2,6 @@ import { WebSocket } from 'ws';
 import { isChatUsername } from '../prototype/server.ts';
 import { readSecureFrame } from './chat-wire.ts';
 import { openSecureSessions } from './secure-session.ts';
-import type { CertificateRequest } from './store.ts';
 
 type Message = { from: string; to: string; text: string; time: string; sequence: number; ciphertextPreview: string };
 type ChatState = { phase: 'offline' | 'connecting' | 'online' | 'rejected'; detail: string; messages: Message[] };
@@ -13,7 +12,7 @@ type Client = {
   outgoing: Map<string, Message>;
 };
 
-export function openClients(origin: string, ca: Buffer, privateKey: (id: string) => Buffer) {
+export function openClients(origin: string, ca: Buffer, privateKey: (id: string) => Buffer, onChange?: () => void) {
   const chatUrl = origin.replace('https:', 'wss:') + '/chat';
   function dial(key: Buffer, certificate: string) {
     return new WebSocket(chatUrl, { ca, cert: certificate, key, origin, handshakeTimeout: 4000 });
@@ -43,6 +42,7 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
     client.state.phase = phase;
     client.state.detail = detail;
     socket?.terminate();
+    onChange?.();
   }
 
   function dropPeer(client: Client, peer: string) {
@@ -58,7 +58,7 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
       return { ...client.state, secure: client.secure?.view() ?? {} };
     },
     online: () => [...clients].filter(([, client]) => client.state.phase === 'online').map(([user]) => user),
-    connect(request: CertificateRequest): void {
+    connect(request: { username: string; pem: string | null; id: string }): void {
       const { username, pem, id } = request;
       const client = actor(username);
       if (!pem || client.socket) return;
@@ -80,8 +80,9 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
       socket.on('error', () => {
         if (client.socket === socket) detach(client, 'rejected', '双向 TLS 连接失败');
       });
-      socket.on('close', () => {
-        if (client.socket === socket) detach(client, 'offline', '连接已关闭');
+      socket.on('close', (code) => {
+        if (client.socket === socket) detach(client, 'offline', code === 4003
+          ? '管理员已停用证书，现有聊天连接已关闭。' : '连接已关闭');
       });
       socket.on('message', (data) => {
         if (client.socket !== socket) return;
@@ -117,8 +118,11 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
           client.state.detail = error instanceof Error
             && ['缺少对端证书', '对端证书校验失败', '对端临时公钥签名无效', '密文完整性校验失败，消息已拒绝'].includes(error.message)
             ? error.message : '安全会话校验失败';
+        } finally {
+          onChange?.();
         }
       });
+      onChange?.();
     },
     probe(id: string, certificate: string) {
       return new Promise<{ stage: 'connection' | 'application'; status: number | null; code: string }>((resolve) => {
@@ -144,6 +148,7 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
       const client = actor(username);
       if (client.state.phase !== 'online' || client.socket?.readyState !== WebSocket.OPEN || !client.secure) return false;
       client.secure.start(to);
+      onChange?.();
       return true;
     },
     send(username: string, to: string, text: string, corruptTag = false): boolean {

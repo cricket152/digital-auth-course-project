@@ -10,7 +10,6 @@ export function openPki(runtime: string) {
   const directory = join(runtime, 'ca');
   if (!existsSync(directory)) setupPki(directory, undefined, { includeDemoClients: false, caDays: 365, serverDays: 90 });
   const localClients = join(runtime, 'clients');
-  mkdirSync(localClients, { recursive: true, mode: 0o700 });
 
   const opensslOptions = {
     cwd: directory,
@@ -61,11 +60,20 @@ export function openPki(runtime: string) {
     directory, ca, server, selfSigned,
     createRequest(username: string) {
       const id = randomBytes(16).toString('hex');
+      mkdirSync(localClients, { recursive: true, mode: 0o700 });
       const keyPath = join(localClients, id + '.key');
       const csr = openssl([
         'req', '-new', '-newkey', 'rsa:2048', '-noenc', '-sha256', '-subj', '/CN=' + username, '-keyout', keyPath,
       ]);
       return { id, csr };
+    },
+    acceptsRequest(csr: string, username: string): boolean {
+      if (!/^-----BEGIN CERTIFICATE REQUEST-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END CERTIFICATE REQUEST-----\s*$/.test(csr) ||
+          !verifyCsr(csr)) return false;
+      const subject = openssl(['req', '-noout', '-subject', '-nameopt', 'RFC2253'], csr).trim();
+      const key = createPublicKey(openssl(['req', '-pubkey', '-noout'], csr));
+      const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
+      return subject === 'subject=CN=' + username && key.asymmetricKeyType === 'rsa' && bits >= 2048 && bits <= 4096;
     },
     describe(csr: string, pem?: string | null) {
       const publicKey = openssl(['req', '-pubkey', '-noout'], csr).trim();

@@ -11,10 +11,12 @@
     "pki:status": "node prototype/set-status.ts",
     "start": "node prototype/main.ts",
     "demo": "npm run app",
+    "demo:server": "node app/main.ts --standalone",
+    "demo:client": "node app/client.ts",
     "demo:prototype": "node prototype/demo.ts",
     "app": "node app/main.ts",
     "check": "tsc --noEmit",
-    "test": "node --test prototype/chat.test.ts app/lifecycle.test.ts"
+    "test": "node --test prototype/chat.test.ts app/lifecycle.test.ts app/standalone.test.ts"
   },
   "dependencies": {
     "ws": "8.23.0"
