@@ -103,7 +103,7 @@ try {
     checkPort(alicePort, 'Alice 网页'), checkPort(bobPort, 'Bob 网页'),
   ]);
   if (!stopping) {
-    const [admin, alice, bob] = await start('服务端', ['app/main.ts', '--standalone', '--launch-clients'], {
+    const [admin, alice, bob] = await start('服务端', ['app/server/main.ts', '--standalone', '--launch-clients'], {
       COURSE_PORT: String(adminPort), COURSE_API_PORT: String(apiPort),
       COURSE_ALICE_PORT: String(alicePort), COURSE_BOB_PORT: String(bobPort),
     }, [

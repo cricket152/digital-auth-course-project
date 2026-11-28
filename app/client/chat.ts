@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
-import { isChatUsername } from '../prototype/server.ts';
-import { readSecureFrame } from './chat-wire.ts';
+import { isChatUsername } from '../../prototype/server.ts';
+import { readSecureFrame } from '../protocol/chat-wire.ts';
 import { openSecureSessions } from './secure-session.ts';
 
 type Message = { from: string; to: string; text: string; time: string; sequence: number; ciphertextPreview: string };

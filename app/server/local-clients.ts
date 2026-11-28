@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { isChatUsername } from '../prototype/server.ts';
+import { isChatUsername } from '../../prototype/server.ts';
 
 type Profile = { username: string; port?: number };
 type Phase = 'starting' | 'running' | 'stopping' | 'stopped' | 'failed';
@@ -18,7 +18,7 @@ type Run = {
 };
 
 const host = '127.0.0.1';
-const entry = fileURLToPath(new URL('./client.ts', import.meta.url));
+const entry = fileURLToPath(new URL('../client/main.ts', import.meta.url));
 
 export function isLocalClientName(value: unknown): value is string {
   return isChatUsername(value) && value !== 'admin';

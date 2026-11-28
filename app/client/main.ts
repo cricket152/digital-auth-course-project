@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { isChatUsername } from '../prototype/server.ts';
+import { isChatUsername } from '../../prototype/server.ts';
 import { openClients } from './chat.ts';
-import { openClientWeb } from './client-web.ts';
-import type { ClientAction } from './client-web.ts';
-import type { CertificateRequest, CertificateStatus } from './store.ts';
+import { openClientWeb } from './web.ts';
+import type { ClientAction } from './web.ts';
+import type { CertificateRequest, CertificateStatus } from '../server/store.ts';
 
 type Certificate = Pick<CertificateRequest, 'id' | 'fingerprint' | 'serial' | 'expires_at'> & { status: CertificateStatus };
 type ServerState = {

@@ -6,7 +6,7 @@ import type { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { readRegistry, demoUsers } from './pki.ts';
-import { readSecureFrame } from '../app/chat-wire.ts';
+import { readSecureFrame } from '../app/protocol/chat-wire.ts';
 
 type IdentityError = 'unregistered_certificate' | 'certificate_revoked' | 'certificate_expired' | 'registry_unavailable';
 export type Identity =

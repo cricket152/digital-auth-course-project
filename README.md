@@ -28,6 +28,18 @@
 
 课程要求和原始报告模板见 [作业要求](./作业要求/)。密钥、证书、令牌和本地环境配置请保存在本地。
 
+## 代码目录
+
+| 目录 | 内容 |
+| --- | --- |
+| [app/server/](app/server/) | 课程服务端、账号和证书、在线查验、认证记录、客户端进程管理 |
+| [app/client/](app/client/) | 独立客户端、本机网页服务、证书接入、会话密钥和加密聊天 |
+| [app/protocol/](app/protocol/) | 聊天帧格式与校验，由客户端和 mTLS 中转共用 |
+| [app/web/](app/web/) | 实验台网页 `lab/`、独立客户端网页 `client/` 和共享样式 |
+| [scripts/](scripts/) | 一键启动器及证书到期演练脚本 |
+| [tests/](tests/) | 证书生命周期、独立多客户端和 mTLS 原型集成测试 |
+| [prototype/](prototype/) | 双栏原型、证书工具及课程应用复用的 mTLS 中转 |
+
 ## 完整证书生命周期
 
 需要 Node.js 24 和 PATH 内的 OpenSSL 3。要演示服务端与客户端独立运行，请使用下文的[独立客户端流程](#单机独立服务端与双客户端)。
@@ -156,7 +168,7 @@ $env:COURSE_EXPIRY_DEMO_ROOT = Read-Host '粘贴第一个终端的演练目录'
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { X509Certificate } from 'node:crypto';
-import { saveDatedCertificate } from './app/test-certificate.ts';
+import { saveDatedCertificate } from './scripts/test-certificate.ts';
 
 const root = resolve((process.env.COURSE_EXPIRY_DEMO_ROOT ?? '').trim());
 if (dirname(root) !== resolve('.prototype') || !basename(root).startsWith('expiry-rehearsal-')) {
@@ -180,7 +192,7 @@ console.log('到期时间 ' + new X509Certificate(pem).validToDate.toLocaleStrin
 也可在仓库根目录运行下列命令，让测试自动启动隔离的服务端和客户端，检查短期证书到期断线、重新申请、新证书接入和归档跨重启。
 
 ```powershell
-node --test app/standalone.test.ts
+node --test tests/standalone.test.ts
 ```
 
 ## 证书在线查验

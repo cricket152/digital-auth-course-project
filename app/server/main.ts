@@ -6,9 +6,9 @@ import type { TLSSocket } from 'node:tls';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { createChatServer, isChatUsername } from '../prototype/server.ts';
-import type { ChatEvidence } from '../prototype/server.ts';
-import { openClients } from './chat.ts';
+import { createChatServer, isChatUsername } from '../../prototype/server.ts';
+import type { ChatEvidence } from '../../prototype/server.ts';
+import { openClients } from '../client/chat.ts';
 import { openPki } from './pki.ts';
 import { openEvidenceArchive } from './evidence-archive.ts';
 import { isLocalClientName, isLocalClientPort, openLocalClients } from './local-clients.ts';
@@ -374,9 +374,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
 }
 
 const assets = new Map<string, { file: string; type: string }>([
-  ['/', { file: './index.html', type: 'text/html; charset=utf-8' }],
-  ['/app.css', { file: './app.css', type: 'text/css; charset=utf-8' }],
-  ['/app.js', { file: './app.js', type: 'text/javascript; charset=utf-8' }],
+  ['/', { file: '../web/lab/index.html', type: 'text/html; charset=utf-8' }],
+  ['/app.css', { file: '../web/app.css', type: 'text/css; charset=utf-8' }],
+  ['/app.js', { file: '../web/lab/app.js', type: 'text/javascript; charset=utf-8' }],
 ]);
 
 function serveWeb(request: IncomingMessage, response: ServerResponse): void {

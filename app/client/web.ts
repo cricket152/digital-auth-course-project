@@ -4,9 +4,9 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const assets = new Map([
-  ['/', { file: './client.html', type: 'text/html' }],
-  ['/app.css', { file: './app.css', type: 'text/css' }],
-  ['/client.js', { file: './client.js', type: 'text/javascript' }],
+  ['/', { file: '../web/client/client.html', type: 'text/html' }],
+  ['/app.css', { file: '../web/app.css', type: 'text/css' }],
+  ['/client.js', { file: '../web/client/client.js', type: 'text/javascript' }],
 ]);
 const commands = ['request', 'connect', 'disconnect', 'negotiate', 'send', 'test-integrity', 'probe-revoked'] as const;
 export type ClientAction = (typeof commands)[number];

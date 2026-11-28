@@ -30,6 +30,8 @@
 - 隔离的干净源码副本按锁文件安装成功。一键启动的三进程就绪、端口冲突提示和退出清理已验证。
 - 独立实验台新增「管理客户端」。以 Alice、Bob 为默认示例，可增加账号，自动分配或指定回环端口，从网页打开、启动和停止独立客户端。四客户端集成测试覆盖独立证书和私钥、每对端会话、定向消息、停用证书后拒绝重连、启动器退出清理及配置跨重启。`npm run check` 与 6 项自动测试通过。Chromium 实测新增客户端、网页签发与持证接入、双向收发、单独启停和重启后复用证书与地址。客户端管理页在 390px 宽度内无横向溢出。
 
+- 按职责整理应用、脚本与测试目录。类型检查和 6 项集成测试通过。隔离源码副本完成 `npm ci`，已复测一键启动、独立服务端和客户端、课程应用及旧原型入口，并检查网页资源加载和一键演示退出清理。
+
 ## 未完成
 
 - 确认「服务器与客户机分离」是否要求实际分机，手机端是否必交，以及手机浏览器能否作为验收入口。
@@ -42,14 +44,11 @@
 
 ## 最近修改文件
 
-- `app/index.html`、`app/app.js`、`app/app.css`
-- `app/main.ts`、`app/chat.ts`、`app/chat-wire.ts`、`app/secure-session.ts`、`prototype/server.ts`、`app/lifecycle.test.ts`
-- `package.json`、`README.md`、`PROJECT_STATUS.md`、`交接文档.md`、`分工与交付安排.md`
-- `app/client.ts`、`app/pki.ts`、`app/store.ts`、`app/tls-comparison.ts`、`app/standalone.test.ts`
-- `app/client-web.ts`、`app/client.html`、`app/client.js`
-- 证书在线查验涉及 `app/main.ts`、`app/pki.ts`、管理端页面和 `app/lifecycle.test.ts`、`app/standalone.test.ts`。
-- 一键启动与归档涉及 `app/launch-demo.ts`、`app/evidence-archive.ts`、`app/test-certificate.ts`。
-- 多客户端管理新增 `app/local-clients.ts`，接入 `app/main.ts`、`app/launch-demo.ts`、管理端页面和 `app/standalone.test.ts`。README 与交接文档同步新增和启停流程。
+- `app/server/` 放置实验台服务、CA 签发及在线查验、SQLite、认证记录和受管客户端进程。
+- `app/client/` 放置独立客户端入口、本机网页服务和安全会话。`app/protocol/` 放置聊天帧校验。
+- `app/web/lab/` 和 `app/web/client/` 分别放置实验台与独立客户端的网页资源，共用 `app/web/app.css`。
+- 启动与到期演练脚本放入 `scripts/`，集成测试统一放入 `tests/`。
+- `package.json`、`tsconfig.json` 随目录更新入口与检查范围，README 和交接文档同步更新路径。
 
 ## 已确认设计决策
 

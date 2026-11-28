@@ -3,7 +3,7 @@ import { createHash, createPublicKey, randomBytes, X509Certificate } from 'node:
 import type { KeyObject } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setupPki } from '../prototype/setup-pki.ts';
+import { setupPki } from '../../prototype/setup-pki.ts';
 import type { CertificateRequest } from './store.ts';
 
 export function openPki(runtime: string) {

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:
 import { request as httpRequest } from 'node:http';
 import { request } from 'node:https';
 import { createServer } from 'node:net';
-import { saveDatedCertificate } from './test-certificate.ts';
+import { saveDatedCertificate } from '../scripts/test-certificate.ts';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
@@ -84,11 +84,11 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   }
 
   function startServer(apiPort = '0') {
-    return launch(['app/main.ts', '--standalone'], { COURSE_PORT: '0', COURSE_API_PORT: apiPort, COURSE_RUNTIME_DIR: serverDir });
+    return launch(['app/server/main.ts', '--standalone'], { COURSE_PORT: '0', COURSE_API_PORT: apiPort, COURSE_RUNTIME_DIR: serverDir });
   }
 
   function startClient(name: string) {
-    return launch(['app/client.ts', name], {
+    return launch(['app/client/main.ts', name], {
       COURSE_API_PORT: apiPort, COURSE_CA_FILE: caPath, COURSE_CLIENT_ROOT: clientRoot, COURSE_CLIENT_PORT: '0',
     });
   }
@@ -377,7 +377,7 @@ test('一键演示可新增独立客户端、定向加密聊天并分别启停',
 
   const [alicePort, bobPort, dianaPort] = await Promise.all([availablePort(), availablePort(), availablePort()]);
   async function launch() {
-    const child = spawn(process.execPath, ['app/launch-demo.ts'], {
+    const child = spawn(process.execPath, ['scripts/launch-demo.ts'], {
       env: { ...process.env, COURSE_PORT: '0', COURSE_API_PORT: '0', COURSE_RUNTIME_DIR: serverDir,
         COURSE_CLIENT_ROOT: clientRoot, COURSE_ALICE_PORT: alicePort, COURSE_BOB_PORT: bobPort },
       stdio: 'pipe', windowsHide: true,

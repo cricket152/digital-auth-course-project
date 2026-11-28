@@ -3,7 +3,7 @@ import {
   diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, verify, X509Certificate,
 } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
-import type { SecureFrame } from './chat-wire.ts';
+import type { SecureFrame } from '../protocol/chat-wire.ts';
 
 type Offer = Extract<SecureFrame, { kind: 'offer' }>;
 type Ciphertext = Extract<SecureFrame, { kind: 'ciphertext' }>;

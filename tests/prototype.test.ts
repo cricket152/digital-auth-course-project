@@ -5,10 +5,10 @@ import { get } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { WebSocket } from 'ws';
-import { readRegistry, saveRegistry } from './pki.ts';
-import { createChatServer } from './server.ts';
-import type { ChatEvidence } from './server.ts';
-import { setupPki } from './setup-pki.ts';
+import { readRegistry, saveRegistry } from '../prototype/pki.ts';
+import { createChatServer } from '../prototype/server.ts';
+import type { ChatEvidence } from '../prototype/server.ts';
+import { setupPki } from '../prototype/setup-pki.ts';
 
 test('浏览器聊天服务校验 TLS、证书绑定和停用状态', { timeout: 20_000 }, async (t) => {
   const runtime = resolve('.prototype');

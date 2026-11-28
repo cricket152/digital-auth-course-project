@@ -2,7 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { Identity } from '../prototype/server.ts';
+import type { Identity } from '../../prototype/server.ts';
 
 export type Role = 'member' | 'admin';
 export type Account = { username: string; role: Role };

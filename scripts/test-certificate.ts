@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { openStore } from './store.ts';
+import { openStore } from '../app/server/store.ts';
 
 export function saveDatedCertificate(runtime: string, id: string, csr: string, from: string, to: string) {
   const fixture = mkdtempSync(join(runtime, 'dated-certificate-'));

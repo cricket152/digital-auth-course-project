@@ -6,15 +6,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { openSecureSessions } from './secure-session.ts';
-import type { SecureFrame } from './chat-wire.ts';
-import { saveDatedCertificate } from './test-certificate.ts';
+import { openSecureSessions } from '../app/client/secure-session.ts';
+import type { SecureFrame } from '../app/protocol/chat-wire.ts';
+import { saveDatedCertificate } from '../scripts/test-certificate.ts';
 
 test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { timeout: 25_000 }, async (t) => {
   const base = resolve('.prototype');
   mkdirSync(base, { recursive: true });
   const runtime = mkdtempSync(join(base, 'course-test-'));
-  const child = spawn(process.execPath, ['app/main.ts'], {
+  const child = spawn(process.execPath, ['app/server/main.ts'], {
     env: { ...process.env, COURSE_PORT: '0', COURSE_RUNTIME_DIR: runtime },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
