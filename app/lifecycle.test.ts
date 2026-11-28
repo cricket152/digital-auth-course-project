@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openSecureSessions } from './secure-session.ts';
 import type { SecureFrame } from './chat-wire.ts';
-import { openStore } from './store.ts';
+import { saveDatedCertificate } from './test-certificate.ts';
 
 test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { timeout: 25_000 }, async (t) => {
   const base = resolve('.prototype');
@@ -132,34 +132,22 @@ test('CSR 签发、mTLS、双人密钥协商、密文完整性及换证', { time
 
     const expiredMember = await api('register', '', { username: 'expired_case', password: samplePassword }, 201);
     const expiredRequest = (await api('request', expiredMember.token, {}, 201)).certificate;
-    const fixture = join(runtime, 'verification-fixtures');
-    mkdirSync(fixture);
-    writeFileSync(join(fixture, 'request.csr'), expiredRequest.csr);
-    writeFileSync(join(fixture, 'index.txt'), '');
-    writeFileSync(join(fixture, 'serial.txt'), 'A1\n');
-    writeFileSync(join(fixture, 'openssl.cnf'), [
-      '[ca]', 'default_ca = issuer', '[issuer]', 'database = index.txt', 'new_certs_dir = .',
-      'serial = serial.txt', 'certificate = ../ca/ca.crt', 'private_key = ../ca/ca.key',
-      'default_md = sha256', 'policy = identity', '[identity]', 'commonName = supplied',
-    ].join('\n') + '\n');
-    const pem = execFileSync('openssl', [
-      'ca', '-batch', '-notext', '-config', 'openssl.cnf', '-in', 'request.csr', '-extfile', '../ca/issued-client.ext',
-      '-startdate', '20200101000000Z', '-enddate', '20200102000000Z',
-    ], { cwd: fixture, encoding: 'utf8', windowsHide: true, stdio: 'pipe' });
-    const expired = new X509Certificate(pem);
-    const database = openStore(runtime);
-    try {
-      assert(database.approve(expiredRequest.id, {
-        pem, fingerprint: expired.fingerprint256, serial: expired.serialNumber, expiresAt: expired.validToDate.toISOString(),
-      }));
-    } finally {
-      database.close();
-    }
+    const pem = saveDatedCertificate(runtime, expiredRequest.id, expiredRequest.csr, '20200101000000Z', '20200102000000Z');
     const expiredResult = await api('verify-certificate', admin.token, { pem });
     assert.equal(expiredResult.certificate.caSignatureVerified, true);
     assert.equal(expiredResult.certificate.validity, 'expired');
     assert.equal(expiredResult.registration.status, 'issued');
     assert.equal(expiredResult.accepted, false);
+    assert.equal((await api('state', expiredMember.token)).certificate.status, 'expired');
+    await api('connect', expiredMember.token, {}, 409);
+    const renewal = (await api('request', expiredMember.token, {}, 201)).certificate;
+    assert.notEqual(renewal.id, expiredRequest.id);
+    await api('approve', admin.token, { id: renewal.id });
+    const historical = await api('verify-certificate', admin.token, { id: expiredRequest.id });
+    assert.equal(historical.certificate.validity, 'expired');
+    assert.equal(historical.registration.status, 'issued');
+    assert.equal(historical.accepted, false);
+    assert.deepEqual((await api('state', expiredMember.token)).revokedHistory, []);
   });
 
   await t.test('端点拒绝伪造协商签名、对端错配和密文重放', async (caseContext) => {

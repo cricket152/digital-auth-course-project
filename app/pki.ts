@@ -95,7 +95,7 @@ export function openPki(runtime: string) {
       if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
       const checkedAt = new Date();
       const now = checkedAt.getTime();
-      const validity = now < start ? 'not_yet_valid' : now > end ? 'expired' : 'valid';
+      const validity = now < start ? 'not_yet_valid' : now >= end ? 'expired' : 'valid';
       return {
         subject: certificate.subject,
         issuer: certificate.issuer,

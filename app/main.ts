@@ -9,7 +9,8 @@ import { createChatServer, isChatUsername } from '../prototype/server.ts';
 import type { ChatEvidence } from '../prototype/server.ts';
 import { openClients } from './chat.ts';
 import { openPki } from './pki.ts';
-import { openStore } from './store.ts';
+import { openEvidenceArchive } from './evidence-archive.ts';
+import { certificateStatus, openStore } from './store.ts';
 import type { Account, CertificateRequest } from './store.ts';
 import { createComparison, describeTlsSession, listenLocal } from './tls-comparison.ts';
 
@@ -46,8 +47,8 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
 
 function visibleRequest(row?: CertificateRequest) {
   if (!row) return null;
-  const { id, username, status, serial, fingerprint, requested_at, reviewed_at, revoked_at, expires_at, csr_created_at, csr } = row;
-  return { id, username, status, serial, fingerprint, requested_at, reviewed_at, revoked_at, expires_at, csr_created_at, csr };
+  const { id, username, serial, fingerprint, requested_at, reviewed_at, revoked_at, expires_at, csr_created_at, csr } = row;
+  return { id, username, status: certificateStatus(row), serial, fingerprint, requested_at, reviewed_at, revoked_at, expires_at, csr_created_at, csr };
 }
 
 const host = '127.0.0.1';
@@ -59,6 +60,8 @@ function localPort(value: string | number, name: string): number {
 }
 const port = localPort(process.env.COURSE_PORT ?? (standalone ? 18447 : 18446), 'COURSE_PORT');
 const apiPort = standalone ? localPort(process.env.COURSE_API_PORT ?? 18448, 'COURSE_API_PORT') : 0;
+const alicePort = standalone ? localPort(process.env.COURSE_ALICE_PORT ?? 18450, 'COURSE_ALICE_PORT') : 18450;
+const bobPort = standalone ? localPort(process.env.COURSE_BOB_PORT ?? 18451, 'COURSE_BOB_PORT') : 18451;
 const origin = new URL('http://' + host + ':' + port);
 const runtime = resolve(process.env.COURSE_RUNTIME_DIR ?? (standalone ? '.prototype/course-server' : '.prototype/course-app'));
 if (process.platform !== 'win32') process.umask(0o077);
@@ -78,6 +81,7 @@ type RecordedEvent = EvidenceEvent & {
   id: number; timestamp: string; requestId?: string; user?: string; recipientRequestId?: string;
 };
 const evidence: RecordedEvent[] = [];
+const archive = openEvidenceArchive<RecordedEvent>(runtime);
 let eventId = 0;
 function observe(event: EvidenceEvent): void {
   const certificate = !('requestId' in event) && 'fingerprint' in event && event.fingerprint
@@ -91,6 +95,7 @@ function observe(event: EvidenceEvent): void {
   };
   evidence.push(entry);
   if (evidence.length > 80) evidence.shift();
+  archive.append(entry);
   console.log(JSON.stringify(entry));
 }
 const { server: mutualServer, disconnectCertificate, onlineUsers } =
@@ -145,7 +150,9 @@ function adminAction(account: Account, route: string, body: Record<string, unkno
     observe({ stage: 'certificate_issued', requestId: row.id, user: row.username, admin: account.username,
       serial: issued.serial, fingerprint: issued.fingerprint });
   } else {
-    if (!store.revoke(row.id)) throw new HttpError(409, '只能停用已签发的证书。');
+    if (certificateStatus(row) !== 'issued' || !store.revoke(row.id)) {
+      throw new HttpError(409, '只能停用当前有效的证书。');
+    }
     observe({ stage: 'certificate_revoked', requestId: row.id, user: row.username, admin: account.username,
       serial: row.serial ?? undefined, fingerprint: row.fingerprint ?? undefined });
     clients?.disconnect(row.username, '管理员已停用证书，现有聊天连接已关闭。');
@@ -171,7 +178,7 @@ function verifyCertificate(account: Account, body: Record<string, unknown>) {
   const reference = store.certificateReference(certificate.fingerprint);
   const row = reference ? store.get(reference.id) : undefined;
   const registration = row && row.status !== 'pending'
-    ? { status: row.status, id: row.id, username: row.username, revokedAt: row.revoked_at }
+    ? { status: certificateStatus(row) === 'expired' ? 'issued' : row.status, id: row.id, username: row.username, revokedAt: row.revoked_at }
     : { status: 'unregistered' };
   return {
     certificate,
@@ -184,12 +191,14 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
   if (account.role !== 'member') throw new HttpError(403, '请用普通用户执行此操作。');
   const { username } = account;
   const current = store.current(username);
+  const status = current && certificateStatus(current);
+  const hasOpenRequest = status === 'issued' || status === 'pending';
   if (standalone && route === '/api/external-request') {
     const { id, csr } = body;
     if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id) || typeof csr !== 'string') {
       throw new HttpError(400, '请提交申请编号和 PKCS#10 CSR。');
     }
-    if (current && current.status !== 'revoked') {
+    if (current && hasOpenRequest) {
       if (id === current.id && csr === current.csr) return { certificate: visibleRequest(current) };
       throw new HttpError(409, '已有等待审批或有效的证书。');
     }
@@ -202,7 +211,7 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
   }
   if (!clients) throw new HttpError(409, '请在独立客户端终端申请证书或进行聊天。');
   if (route === '/api/csr' || route === '/api/request') {
-    if (current && current.status !== 'revoked') throw new HttpError(409, '已有等待审批或有效的证书。');
+    if (hasOpenRequest) throw new HttpError(409, '已有等待审批或有效的证书。');
     let draft = store.draft(username);
     if (body.draftId !== undefined && draft?.id !== body.draftId) {
       throw new HttpError(404, '找不到当前账号的这份 CSR。');
@@ -219,6 +228,7 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
   }
   if (route === '/api/connect') {
     if (!current?.pem) throw new HttpError(409, '请先等待管理员签发证书。');
+    if (status === 'expired') throw new HttpError(409, '证书已过期，请申请新证书。');
     clients.connect(current);
     return { chat: clients.state(username) };
   }
@@ -243,7 +253,7 @@ function memberAction(account: Account, route: string, body: Record<string, unkn
 
 function ownedRevokedCertificate(account: Account, id: unknown) {
   const row = typeof id === 'string' ? store.get(id) : undefined;
-  if (!row || row.username !== account.username || row.status !== 'revoked' || !row.pem) {
+  if (!row || row.username !== account.username || certificateStatus(row) !== 'revoked' || !row.pem) {
     throw new HttpError(404, '找不到当前账号的已停用证书。');
   }
   return { id: row.id, pem: row.pem };
@@ -254,7 +264,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     const account = requireAccount(request);
     if (route === '/api/state') {
       const state = account.role === 'admin'
-        ? { account, requests: store.list().map(visibleRequest), evidence }
+        ? { account, requests: store.list().map(visibleRequest), evidence,
+            evidenceRuns: archive.runs, currentEvidenceRun: archive.id, archiveAvailable: archive.available }
         : {
             account, certificate: visibleRequest(store.current(account.username)), draft: store.draft(account.username) ?? null,
             chat: clients?.state(account.username) ?? { phase: 'offline', detail: '请使用独立客户端终端。', messages: [], secure: {} },
@@ -263,6 +274,14 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
             ...(standalone ? { chatOrigin: mutualOrigin, adminOrigin: origin.origin } : {}),
           };
       reply(response, 200, state);
+      return;
+    }
+    const evidenceId = route.match(/^\/api\/evidence-run\/(\d{13}-[a-f0-9]{8})$/)?.[1];
+    if (evidenceId) {
+      if (account.role !== 'admin') throw new HttpError(403, '此操作仅限管理员。');
+      const events = archive.read(evidenceId);
+      if (!events) throw new HttpError(404, '找不到该场次的记录。');
+      reply(response, 200, { events });
       return;
     }
     const detailId = route.match(/^\/api\/request-details\/([a-f0-9]{32})$/)?.[1];
@@ -368,9 +387,15 @@ function serveWeb(request: IncomingMessage, response: ServerResponse): void {
     reply(response, 404, { error: '页面不存在。' });
     return;
   }
-  const content = readFileSync(new URL(asset.file, import.meta.url), 'utf8');
-  response.writeHead(200, { 'Content-Type': asset.type })
-    .end(standalone && route === '/' ? content.replace('<body>', '<body data-standalone>') : content);
+  let content = readFileSync(new URL(asset.file, import.meta.url), 'utf8');
+  if (standalone && route === '/') {
+    content = content.replace('<body>', '<body data-standalone>')
+      .replace(/http:\/\/127\.0\.0\.1:(18450|18451)\//g, (url, port: string) => {
+        const configured = port === '18450' ? alicePort : bobPort;
+        return configured ? 'http://127.0.0.1:' + configured + '/' : url;
+      });
+  }
+  response.writeHead(200, { 'Content-Type': asset.type }).end(content);
 }
 
 const secureWeb = createHttpsServer({ ...pki.server, requestCert: false, minVersion: 'TLSv1.2' }, serveWeb);

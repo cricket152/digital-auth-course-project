@@ -1,4 +1,4 @@
-const labels = { pending: '待审批', issued: '已签发', revoked: '已停用' };
+const labels = { pending: '待审批', issued: '已签发', revoked: '已停用', expired: '已过期' };
 
 class ApiError extends Error {
   constructor(status, description) {
@@ -332,19 +332,20 @@ function createMember(number) {
       generate: [Boolean(request?.csr), request ? formatTime(draft?.created_at ?? certificate?.csr_created_at) || '已生成' : '待生成'],
       submit: [Boolean(!draft && certificate?.requested_at), draft ? '待提交' : formatTime(certificate?.requested_at) || '等待 CSR'],
       review: [issued, draft ? '等待提交' : formatTime(certificate?.reviewed_at) || (pending ? '待审批' : '等待提交')],
-      connect: [connected, connected ? '已验证证书和账号' : certificate?.status === 'revoked' ? '证书已停用' : '等待有效证书或连接'],
+      connect: [connected, connected ? '已验证证书和账号'
+        : { revoked: '证书已停用', expired: '证书已过期，请重新申请' }[certificate?.status] ?? '等待有效证书或连接'],
     };
     for (const [step, [done, detail]] of Object.entries(steps)) {
       const item = query('[data-step="' + step + '"]');
       item.dataset.done = String(done);
       item.querySelector('span').textContent = detail;
     }
-    query('.generate').hidden = Boolean(draft || (certificate && certificate.status !== 'revoked'));
+    query('.generate').hidden = Boolean(draft || ['pending', 'issued'].includes(certificate?.status));
     query('.request').hidden = !draft;
     query('.review-link').hidden = !pending;
     query('.download').hidden = !certificate?.serial;
     const connect = query('.connect');
-    connect.disabled = !certificate?.serial || ['online', 'connecting'].includes(data.chat.phase);
+    connect.disabled = !certificate?.serial || certificate.status === 'expired' || ['online', 'connecting'].includes(data.chat.phase);
     connect.textContent = data.chat.phase === 'online' ? '已连接'
       : certificate?.status === 'revoked' ? '重连验证' : '持证连接';
 
@@ -538,6 +539,7 @@ const eventTitles = {
   csr_submitted: '提交证书申请',
   certificate_issued: '签发证书',
   certificate_revoked: '停用证书',
+  certificate_expired: '证书到期断开连接',
   tls_established: '完成 TLS 握手',
   tls_rejected: '拒绝 TLS 握手',
   websocket_admission: '聊天接入检查',
@@ -549,6 +551,7 @@ const evidenceTimeline = document.querySelector('#evidence-timeline');
 const evidenceRaw = document.querySelector('#server-events');
 const downloadEvidence = document.querySelector('#download-evidence');
 let records;
+let displayedRun;
 
 function updateTimeline() {
   if (!records?.length) return;
@@ -558,10 +561,12 @@ function updateTimeline() {
     if (/^#\d+$/.test(term)) return [event.connection, event.recipientConnection].map(String).includes(term.slice(1));
     return [event.user, event.from, event.to, event.requestId, event.recipientRequestId, event.fingerprint,
       event.recipientFingerprint, event.sessionId, event.stage, eventTitles[event.stage], event.result, event.code]
-      .some((value) => value?.toLowerCase().includes(term));
+      .some((value) => value != null && String(value).toLowerCase().includes(term));
   });
-  document.querySelector('#evidence-count').textContent = '显示 ' + matching.length + ' 条，共 ' + records.length + ' 条';
-  evidenceTimeline.replaceChildren(...matching.map((event) => {
+  const filterSummary = '匹配 ' + matching.length + ' 条，共 ' + records.length + ' 条';
+  document.querySelector('#evidence-count').textContent = matching.length > 200
+    ? filterSummary + '。时间线显示最近 200 条，下载包含全部匹配记录。' : filterSummary;
+  evidenceTimeline.replaceChildren(...matching.slice(-200).map((event) => {
     const item = document.createElement('li');
     item.dataset.stage = event.stage;
     const header = document.createElement('div');
@@ -598,16 +603,16 @@ function updateTimeline() {
   downloadEvidence.disabled = matching.length === 0;
 }
 
-function renderEvidence(events) {
-  document.querySelector('#evidence-locked').hidden = Boolean(events);
+function renderEvidence(events, runId = '') {
   document.querySelector('#evidence-empty').hidden = !events || events.length > 0;
-  document.querySelector('#evidence-content').hidden = !events?.length;
-  if (events?.at(-1)?.id === records?.at(-1)?.id && events?.length === records?.length) return;
+  if (displayedRun === runId && events?.at(-1)?.id === records?.at(-1)?.id && events?.length === records?.length) return;
+  displayedRun = runId;
   records = events;
   if (!records?.length) {
     evidenceTimeline.replaceChildren();
     evidenceRaw.textContent = '';
-    evidenceFilter.value = '';
+    document.querySelector('#evidence-count').textContent = '';
+    downloadEvidence.disabled = true;
     document.querySelector('.raw-evidence').open = false;
   }
   updateTimeline();
@@ -619,16 +624,83 @@ downloadEvidence.addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([evidenceRaw.textContent + '\n'], { type: 'application/x-ndjson' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'authentication-evidence.ndjson';
+  link.download = (displayedRun || 'authentication-evidence-live') + '.ndjson';
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
+
+function createEvidenceView() {
+  const select = document.querySelector('#evidence-run');
+  const reload = document.querySelector('#reload-evidence');
+  const status = document.querySelector('#evidence-notice');
+  let token = '';
+  let pending = 0;
+  let listKey;
+  let currentRun;
+  let live;
+
+  async function selectRun() {
+    const id = select.value;
+    const sequence = ++pending;
+    reload.hidden = !id;
+    showNotice(status);
+    if (!id) {
+      renderEvidence(live);
+      return;
+    }
+    renderEvidence(null, id);
+    if (!token) return;
+    showNotice(status, '正在读取此场次…');
+    try {
+      const { events } = await api('evidence-run/' + encodeURIComponent(id), { token });
+      if (sequence !== pending) return;
+      renderEvidence(events, id);
+      showNotice(status);
+    } catch (error) {
+      if (sequence === pending) showNotice(status, error.message);
+    }
+  }
+
+  select.addEventListener('change', () => { void selectRun(); });
+  reload.addEventListener('click', () => { void selectRun(); });
+
+  return (data, adminToken) => {
+    const locked = !data || !adminToken;
+    document.querySelector('#evidence-locked').hidden = !locked;
+    document.querySelector('#evidence-content').hidden = locked;
+    live = data?.evidence ?? null;
+    if (token !== adminToken || currentRun !== data?.currentEvidenceRun) {
+      pending++;
+      select.value = '';
+      reload.hidden = true;
+      showNotice(status);
+      evidenceFilter.value = '';
+    }
+    token = adminToken;
+    currentRun = data?.currentEvidenceRun;
+    const runs = data?.evidenceRuns ?? [];
+    const marker = JSON.stringify([currentRun, runs]);
+    if (marker !== listKey) {
+      const selected = select.value;
+      select.replaceChildren(new Option('本场实时记录（最近 80 条）', ''), ...runs.map((run) => {
+        const label = run.id === currentRun ? '本场已归档记录' : formatTime(run.startedAt);
+        return new Option(label, run.id);
+      }));
+      if (runs.some(({ id }) => id === selected)) select.value = selected;
+      listKey = marker;
+    }
+    showNotice(document.querySelector('#evidence-storage'), data?.archiveAvailable === false
+      ? '本场归档写入失败，仍可下载实时记录。' : '');
+    if (!select.value) renderEvidence(live);
+  };
+}
 
 function createCertificateVerification() {
   const locked = document.querySelector('#verify-locked');
   const content = document.querySelector('#verify-content');
   const recordForm = document.querySelector('#verify-record');
   const pemForm = document.querySelector('#verify-pem');
+  const fileInput = document.querySelector('#verify-file');
   const select = document.querySelector('#verify-select');
   const result = document.querySelector('#verify-result');
   const notice = document.querySelector('#verify-notice');
@@ -698,6 +770,19 @@ function createCertificateVerification() {
     void verify({ id: select.value });
   });
   select.addEventListener('change', updateButtons);
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const current = token;
+    showNotice(notice);
+    try {
+      if (file.size > 7500) throw new Error('证书文件过长，请选择一张 PEM 公开证书。');
+      const pem = await file.text();
+      if (token === current && fileInput.files[0] === file) pemForm.elements.pem.value = pem;
+    } catch (error) {
+      if (token === current && fileInput.files[0] === file) showNotice(notice, error.message);
+    }
+  });
   pemForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void verify({ pem: pemForm.elements.pem.value.trim() });
@@ -734,6 +819,7 @@ function createAdmin() {
   const notice = document.querySelector('#admin-notice');
   const storageKey = 'course-admin';
   const renderVerification = createCertificateVerification();
+  const renderEvidenceView = createEvidenceView();
   let token = sessionStorage.getItem(storageKey) ?? '';
   let refreshing = false;
 
@@ -751,7 +837,7 @@ function createAdmin() {
     const pending = data?.requests.filter((row) => row.status === 'pending').length ?? 0;
     pendingCount.textContent = String(pending);
     pendingCount.hidden = pending === 0;
-    renderEvidence(data?.evidence ?? null);
+    renderEvidenceView(data, data ? token : '');
     renderVerification(data ? token : '', data?.requests ?? []);
     if (!data) {
       list.replaceChildren();
@@ -790,7 +876,7 @@ function createAdmin() {
       original.append(originalLabel, csr);
       details.append(summary, facts, original);
       attachCryptoDetails(details)(row, token);
-      if (row.status !== 'revoked') {
+      if (row.status === 'pending' || row.status === 'issued') {
         const button = document.createElement('button');
         button.type = 'button';
         button.dataset.id = row.id;

@@ -8,11 +8,12 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { readRegistry, demoUsers } from './pki.ts';
 import { readSecureFrame } from '../app/chat-wire.ts';
 
-type IdentityError = 'unregistered_certificate' | 'certificate_revoked' | 'registry_unavailable';
+type IdentityError = 'unregistered_certificate' | 'certificate_revoked' | 'certificate_expired' | 'registry_unavailable';
 export type Identity =
   | { user: string }
   | { error: IdentityError; status: 403 | 503; user?: string };
 export type IdentityLookup = (fingerprint: string) => Identity;
+type ChatConnection = { client: WebSocket; connection: number; fingerprint?: string; expiresAt: number };
 
 export function isChatUsername(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9_]{2,23}$/.test(value);
@@ -24,6 +25,7 @@ export type ChatEvidence =
       authorized: boolean; resumed: boolean; subject?: string; issuer?: string; fingerprint?: string;
     }
   | { stage: 'tls_rejected'; connection: number; code: string }
+  | { stage: 'certificate_expired'; connection: number; user: string; fingerprint?: string }
   | {
       stage: 'websocket_admission'; connection: number; status: 101 | 403 | 409 | 503;
       result: 'active' | 'already_connected' | IdentityError; user?: string; fingerprint?: string;
@@ -46,10 +48,12 @@ const assets = new Map([
 
 function getIdentity(request: IncomingMessage, lookup: IdentityLookup): Identity {
   const socket = request.socket as TLSSocket;
-  const fingerprint = socket.authorized ? socket.getPeerX509Certificate()?.fingerprint256 : undefined;
-  if (!fingerprint) return { error: 'unregistered_certificate', status: 403 };
+  const certificate = socket.authorized ? socket.getPeerX509Certificate() : undefined;
+  if (!certificate) return { error: 'unregistered_certificate', status: 403 };
   try {
-    return lookup(fingerprint);
+    const identity = lookup(certificate.fingerprint256);
+    if ('error' in identity || Date.now() < certificate.validToDate.getTime()) return identity;
+    return { error: 'certificate_expired', status: 403, user: identity.user };
   } catch {
     return { error: 'registry_unavailable', status: 503 };
   }
@@ -123,7 +127,15 @@ export function createChatServer(
 ) {
   if (!identityLookup) readRegistry(directory);
   const lookup = identityLookup ?? ((fingerprint: string) => prototypeLookup(directory, fingerprint));
-  const sockets = new Map<string, { client: WebSocket; connection: number; fingerprint?: string }>();
+  const sockets = new Map<string, ChatConnection>();
+  function active(user: string, entry?: ChatConnection) {
+    if (!entry || entry.client.readyState !== WebSocket.OPEN) return false;
+    if (Date.now() < entry.expiresAt) return true;
+    entry.client.close(4004, 'certificate_expired');
+    observe?.({ stage: 'certificate_expired', user, connection: entry.connection, fingerprint: entry.fingerprint });
+    return false;
+  }
+
   const connectionIds = new WeakMap<TLSSocket, number>();
   let nextConnection = 0;
 
@@ -185,22 +197,30 @@ export function createChatServer(
       return rejectUpgrade(socket, identity.status);
     }
     const { user } = identity;
-    if (sockets.get(user)?.client.readyState === WebSocket.OPEN) {
+    if (active(user, sockets.get(user))) {
       observe?.({ stage: 'websocket_admission', connection, status: 409, result: 'already_connected', user, fingerprint });
       return rejectUpgrade(socket, 409);
     }
 
     webSockets.handleUpgrade(request, socket, head, (client) => {
       const replaced = sockets.has(user);
-      sockets.set(user, { client, connection, fingerprint });
+      const entry = { client, connection, fingerprint, expiresAt: certificate?.validToDate.getTime() ?? 0 };
+      sockets.set(user, entry);
       if (replaced && mode === 'sealed') {
         for (const [peer, online] of sockets) {
           if (peer !== user) send(online.client, { type: 'peer_left', user });
         }
       }
       observe?.({ stage: 'websocket_admission', connection, status: 101, result: 'active', user, fingerprint });
+      let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+      function watchExpiry() {
+        if (active(user, entry)) {
+          expiryTimer = setTimeout(watchExpiry, Math.min(2_147_483_647, entry.expiresAt - Date.now())).unref();
+        }
+      }
       client.on('error', () => client.terminate());
       client.on('close', () => {
+        clearTimeout(expiryTimer);
         if (sockets.get(user)?.client !== client) return;
         sockets.delete(user);
         if (mode === 'sealed') {
@@ -208,14 +228,14 @@ export function createChatServer(
         }
       });
       client.on('message', (data, isBinary) => {
-        if (client.readyState !== WebSocket.OPEN) return;
+        if (!active(user, entry)) return;
         const message = isBinary ? undefined : parseMessage(data.toString(), mode);
         if (!message || message.to === user) {
           send(client, { type: 'error', code: 'invalid_message' });
           return;
         }
         const peer = sockets.get(message.to);
-        if (peer?.client.readyState !== WebSocket.OPEN) {
+        if (!peer || !active(message.to, peer)) {
           send(client, { type: 'error', code: 'peer_offline', to: message.to });
           return;
         }
@@ -243,12 +263,13 @@ export function createChatServer(
         observe?.({ ...context, stage: 'message_relayed', bytes: Buffer.byteLength(message.text, 'utf8') });
         send(client, { type: 'sent', to: message.to, text: message.text });
       });
+      watchExpiry();
       send(client, { type: 'ready', user });
     });
   });
   return {
     server, webSockets,
-    onlineUsers: () => [...sockets].filter(([, connection]) => connection.client.readyState === WebSocket.OPEN)
+    onlineUsers: () => [...sockets].filter(([user, connection]) => active(user, connection))
       .map(([user]) => user),
     disconnectCertificate(user: string, fingerprint: string) {
       const connection = sockets.get(user);

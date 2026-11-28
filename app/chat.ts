@@ -81,8 +81,12 @@ export function openClients(origin: string, ca: Buffer, privateKey: (id: string)
         if (client.socket === socket) detach(client, 'rejected', '双向 TLS 连接失败');
       });
       socket.on('close', (code) => {
-        if (client.socket === socket) detach(client, 'offline', code === 4003
-          ? '管理员已停用证书，现有聊天连接已关闭。' : '连接已关闭');
+        if (client.socket !== socket) return;
+        const details = {
+          4003: '管理员已停用证书，现有聊天连接已关闭。',
+          4004: '证书已过期，聊天连接已关闭。请申请新证书。',
+        } as Record<number, string>;
+        detach(client, 'offline', details[code] ?? '连接已关闭');
       });
       socket.on('message', (data) => {
         if (client.socket !== socket) return;

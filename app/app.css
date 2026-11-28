@@ -150,7 +150,7 @@ button:disabled, input:disabled, select:disabled { opacity: .6; cursor: default;
 }
 .badge[data-state="issued"] { color: var(--success); background: var(--success-soft); }
 .badge[data-state="draft"], .badge[data-state="pending"] { color: var(--warning); background: var(--warning-soft); }
-.badge[data-state="revoked"] { color: var(--danger); background: var(--danger-soft); }
+.badge[data-state="revoked"], .badge[data-state="expired"] { color: var(--danger); background: var(--danger-soft); }
 
 .certificate, .chat { padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .certificate-steps { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 7px; }
@@ -251,6 +251,7 @@ tr[data-passed="false"] td:last-child { color: var(--danger); }
 .evidence-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .evidence-toolbar label { flex: 1 1 275px; max-width: 430px; }
 .evidence-count { margin: 12px 0; }
+.evidence-search { margin-top: 12px; }
 .timeline { display: grid; gap: 8px; list-style: none; padding: 0; margin: 0; }
 .timeline li { padding: 9px 12px; border-left: 3px solid var(--accent); background: var(--surface-subtle); border-radius: 0 8px 8px 0; }
 .timeline li[data-stage="certificate_revoked"], .timeline li[data-stage="tls_rejected"] { border-color: var(--danger); }

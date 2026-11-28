@@ -6,7 +6,7 @@
 
 ## 当前进度与课程要求
 
-**本机功能集成已完成，进入分机联调与课程验收准备。** 默认演示在一台 Windows 电脑上启动独立服务端、Alice 和 Bob 三个进程，操作在各自的浏览器页面完成。小组已实测网页流程。首次运行后可按[三终端流程](#单机独立服务端与双客户端)复核。
+**本机功能集成已完成，进入课程交付准备。** 默认演示在一台 Windows 电脑上启动独立服务端、Alice 和 Bob 三个进程，操作在各自的浏览器页面完成。小组已实测网页流程。可按[单机验收步骤](#单机独立服务端与双客户端)启动和复现。
 
 | 课件第 6 页要求 | 当前落实情况 |
 | --- | --- |
@@ -18,7 +18,7 @@
 
 课件第 6 页用「可以支持」列出客户端 APP 和手机端 APP，第 10 页再次列出这两种形态。**手机端是否为本组选题的必交项，需由指导老师确认。** 当前有适配窄屏的客户端网页，独立进程绑定本机回环地址，尚未在手机真机上联调。若老师要求手机端，再确认手机浏览器能否验收，以及是否须提交 Android 或 iOS 安装包。依据见[课程课件](./作业要求/数字认证实验2026.pdf)。
 
-下一步优先验证完整版跨机器运行，并准备源程序、可执行程序、模板报告、PPT 和功能录屏。当前验收状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
+下一步准备源程序、可执行程序、模板报告、PPT 和功能录屏。分机验证按指导老师确认的验收口径安排。当前验收状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
 
 ## 组内协作
 
@@ -30,7 +30,7 @@
 
 ## 完整证书生命周期
 
-需要 Node.js 24 和 PATH 内的 OpenSSL 3。要演示服务端与客户端独立运行，请使用下文的[三终端流程](#单机独立服务端与双客户端)。
+需要 Node.js 24 和 PATH 内的 OpenSSL 3。要演示服务端与客户端独立运行，请使用下文的[独立客户端流程](#单机独立服务端与双客户端)。
 
 ```powershell
 npm ci
@@ -44,7 +44,7 @@ npm run demo
 3. 让两个客户端分别点击「持证连接」。选中在线收件人并点击「协商会话密钥」，等待两端显示已启用 AES-256-GCM，再发送消息并从另一端回复。
 4. 在「TLS 对照」点击「运行对照」，查看单向 TLS、双向 TLS 缺客户端证书、自签名证书的默认信任与显式信任四个实测结果。
 5. 管理员停用其中一张证书，确认该客户端离线。点击「重连验证」，会看到聊天服务拒绝旧证书的 HTTP 403。该账号重新生成 CSR、提交并获签后，用新证书上线，重新协商后发送消息。展开「已停用证书」，选择对应序列号再次验证旧证书，确认旧证书依然被拒绝。
-6. 登录管理员后打开「认证记录」。按账号、申请编号、证书指纹、会话编号或 `#连接编号` 筛选，展开原始日志，或下载筛选结果为 NDJSON。网页保留本次服务运行的最近 80 条事件。
+6. 登录管理员后打开「认证记录」。按账号、申请编号、证书指纹、会话编号或 `#连接编号` 筛选，展开原始日志，或下载筛选结果为 NDJSON。实时视图显示本场最近 80 条事件，历史记录可按场次查阅。
 
 | 想说明的原理 | 可核对的记录 |
 | --- | --- |
@@ -69,36 +69,127 @@ npm run demo
 
 ## 单机独立服务端与双客户端
 
-安装依赖后，在同一台电脑的三个终端分别运行下表命令。三个终端的工作目录均为仓库根目录。
+### 一键启动
 
-| 终端 | 命令 | 网页 | 本地运行目录 |
-| --- | --- | --- | --- |
-| 服务端 | `npm run demo:server` | [实验台](http://127.0.0.1:18447/) | `.prototype/course-server/` |
-| Alice | `npm run demo:client -- alice` | [Alice 客户端](http://127.0.0.1:18450/) | `.prototype/course-clients/alice/` |
-| Bob | `npm run demo:client -- bob` | [Bob 客户端](http://127.0.0.1:18451/) | `.prototype/course-clients/bob/` |
+在仓库根目录打开 PowerShell。环境需要 Node.js 24 或更新版本、PATH 中的 OpenSSL 3。第一次运行或更换依赖版本时先运行 `npm ci`。
 
-1. 等服务端打印启动地址后启动 Alice 和 Bob。从实验台侧栏打开两个客户端网页。首次启动自动注册账号，重启后复用本地账号与证书。
-2. 两端点击「生成 CSR 并申请」。客户端各自在自己的目录生成 RSA 私钥与 CSR，通过 HTTPS 提交 CSR。看到「待审批」后，在 [证书审批](http://127.0.0.1:18447/#admin) 用 `admin` 登录。初始密码在服务端终端打印的 `admin-password.txt` 中。核对两份申请的主体与 CSR 签名，再点击「审批签发」。
-3. 两端都点击「持证连接」。看到「已持证上线」后，在 Alice 页面选中 Bob，点击「协商会话密钥」。两端应显示「AES-256-GCM 已启用」。展开各自的「密钥协商记录」，核对会话编号与协商摘要。
-4. 在 Alice 页面发一条消息，然后在 Bob 页面回复。展开任一消息下的「密文片段」，再和服务端 [认证记录](http://127.0.0.1:18447/#evidence) 中的会话编号、序号及密文片段对照。
-5. 在 Alice 终端输入 `quit`，Alice 网页会显示客户端进程未响应，Bob 和服务端继续运行。重启 Alice，返回页面点击「持证连接」；在网页停用 Alice 的证书，再点击「用旧证书重连验证」。Alice 应显示「证书接入被拒绝（HTTP 403）」，Bob 仍保持在线。
+```powershell
+npm ci
+npm run demo:all
+```
 
-终端仍支持 `request`、`status`、`connect`、`negotiate <账号>`、`send <账号> <消息>`、`disconnect` 和 `quit`。服务端可用 Ctrl+C 停止。服务端重启后，用有效证书重新连接，已停用证书仍会被拒绝。
+等终端显示「三个进程均已就绪」，再打开下表中的网页。使用自定义端口时，以启动终端列出的地址为准。演示结束后在启动终端输入 `quit` 或按 Ctrl+C。若提示端口已占用，先在原来的终端停止对应的演示进程。
 
-客户端启动时读取服务端的公共 CA 证书，默认是 `.prototype/course-server/ca/ca.crt`。私钥保存在各自客户端目录，签发证书在首次 `connect` 时写入同一目录。服务端目录保存 CA 与服务端密钥、申请和签发状态。三个进程默认监听或连接本机回环地址，运行目录需保留在本地。
+| 页面 | 默认入口 | 默认运行目录 |
+| --- | --- | --- |
+| 实验台与证书审批 | [实验台](http://127.0.0.1:18447/#admin) | `.prototype/course-server/` |
+| Alice | [Alice 客户端](http://127.0.0.1:18450/) | `.prototype/course-clients/alice/` |
+| Bob | [Bob 客户端](http://127.0.0.1:18451/) | `.prototype/course-clients/bob/` |
 
-服务端管理网页默认端口是 `18447`，可用 `COURSE_PORT` 覆盖。客户端提交 CSR 的 HTTPS 默认端口是 `18448`，可在三个终端设置相同的 `COURSE_API_PORT`。WSS 地址由客户端从认证后的 HTTPS 接口取得。若用 `COURSE_CLIENT_PORT` 更改客户端网页端口，请打开该客户端终端打印的地址。可用 `COURSE_RUNTIME_DIR` 和 `COURSE_CLIENT_ROOT` 分别指定服务端和客户端运行目录。更改服务端目录时，在客户端设置 `COURSE_CA_FILE` 指向该服务端的公共 CA 证书。默认目录和端口可与 `npm run demo` 并用。
+### 申请、连接与加密收发
 
-### 独立客户端的完整性和换证演示
+1. 在 Alice、Bob 页面分别点「生成 CSR 并申请」。首次启动会自动注册两个账号。若已有证书，看到「已签发」可直接持证连接，看到「待审批」可直接去审批，看到「已停用」或「已过期」可重新申请。
+2. 打开实验台的「证书审批」，从服务端终端显示的 `admin-password.txt` 读取密码。默认路径为 `.prototype/course-server/admin-password.txt`。输入管理员密码并点击「登录管理员」，分别点 Alice 和 Bob 的「审批签发」。
+3. 两端的证书状态更新为「已签发」后，分别点「持证连接」。在 Alice 页面选择 Bob，点「协商会话密钥」。两端应显示「AES-256-GCM 已启用」。「密钥协商记录」中的会话编号与协商摘要应一致。
+4. 在 Alice 页面发送一条消息，再从 Bob 页面回复。两端应收到对方的明文。展开消息中的「密文片段」，可以和实验台「认证记录」里的会话编号、序号和密文片段对照。
+5. 在实验台打开「TLS 对照」，点「运行对照」。可核对单向 TLS、双向 TLS 缺证书、自签名证书默认信任与显式信任四项结果。
 
-- **完整性拒收。** 两端完成协商后，发送端点击「发送篡改测试包」。接收端会显示完整性拒收次数，聊天记录只保留通过验证的消息。再发送正常消息，可确认原会话仍能通信。
-- **换证后复核。** 停用原证书后，在该客户端点「重新申请证书」。审批签发后，用新证书持证连接并重新协商。打开「已停用证书」，按序列号选择旧证书，点击「复核旧证书」。复核会用旧证书发起独立连接并显示 HTTP 403，新会话可继续收发。
+### 篡改拒收和停用换证
+
+- **篡改拒收。** 两端完成协商后，Alice 点「发送篡改测试包」。Bob 应显示「完整性校验已拒收 1 条消息」，聊天记录里不出现测试内容。再从 Alice 发一条正常消息，Bob 应能解密。重复测试时，拒收次数会累加。
+- **停用和旧证复核。** 在「证书审批」停用 Alice 当前仍在有效期内的证书。Alice 应断线，点「用旧证书重连验证」应显示 HTTP 403，Bob 仍在线。随后在 Alice 页点「重新申请证书」，由管理员签发，用新证书连接并重新协商。展开「已停用证书」，选择旧序列号，点「复核旧证书」。即使旧证书返回 HTTP 403，新会话也应继续收发。
+
+### 分别启动三个进程
+
+想单独检查退出与重启时，在同一台电脑的三个终端分别运行下列命令。等服务端就绪后再启动客户端。
+
+| 终端 | 命令 |
+| --- | --- |
+| 服务端 | `npm run demo:server` |
+| Alice | `npm run demo:client -- alice` |
+| Bob | `npm run demo:client -- bob` |
+
+在 Alice 终端输入 `quit`，Alice 网页应显示客户端进程未响应，Bob 和服务端继续运行。重新运行 Alice 的启动命令并持证连接即可恢复。客户端终端也支持 `request`、`status`、`connect`、`negotiate <账号>`、`send <账号> <消息>` 和 `disconnect`。
+
+客户端启动时读取服务端的公共 CA 证书，默认是 `.prototype/course-server/ca/ca.crt`。每个客户端的私钥留在自己的运行目录，签发证书首次持证连接时写入同一目录。服务端保存 CA、服务端密钥及申请和签发状态。
+
+服务端管理网页与客户端 HTTPS 的默认端口分别是 `18447`、`18448`，可用 `COURSE_PORT`、`COURSE_API_PORT` 更改。分别启动时，客户端可用 `COURSE_CLIENT_PORT` 更改自己的网页端口。一键启动可用 `COURSE_ALICE_PORT`、`COURSE_BOB_PORT` 分别设置两个页面端口。可用 `COURSE_RUNTIME_DIR`、`COURSE_CLIENT_ROOT` 指定运行目录。若分别启动且更改了服务端目录，在客户端设置 `COURSE_CA_FILE` 指向该服务端的公共 CA 证书。
+
+### 立即复现证书到期与续签
+
+正常签发的证书有效期为 7 天。下面的演练使用一份新建的本地数据和一张 90 秒有效的测试证书。可同时保留日常演示运行的数据。
+
+1. 在仓库根目录的第一个 PowerShell 窗口运行下列命令，保留终端中输出的「演练目录」。每次执行都会创建新的运行目录。
+
+```powershell
+$demoDir = Join-Path (Get-Location).Path ".prototype/expiry-rehearsal-$(Get-Date -Format yyyyMMdd-HHmmss-fff)"
+$env:COURSE_RUNTIME_DIR = Join-Path $demoDir 'server'
+$env:COURSE_CLIENT_ROOT = Join-Path $demoDir 'clients'
+$env:COURSE_CA_FILE = Join-Path $env:COURSE_RUNTIME_DIR 'ca/ca.crt'
+$env:COURSE_PORT = '18457'
+$env:COURSE_API_PORT = '18458'
+$env:COURSE_ALICE_PORT = '18459'
+$env:COURSE_BOB_PORT = '18460'
+Write-Host "演练目录 $demoDir"
+npm run demo:all
+```
+
+2. 等三个进程就绪，打开 [演练用 Alice](http://127.0.0.1:18459/)，点「生成 CSR 并申请」，停在「待审批」。这次由第二个终端把同一个 CSR 登记成短期测试证书。
+
+3. 在仓库根目录的第二个 PowerShell 窗口运行下列命令，按提示粘贴第一步的演练目录。成功后会打印公开证书路径和到期时间。
+
+```powershell
+$env:COURSE_EXPIRY_DEMO_ROOT = Read-Host '粘贴第一个终端的演练目录'
+@'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { X509Certificate } from 'node:crypto';
+import { saveDatedCertificate } from './app/test-certificate.ts';
+
+const root = resolve((process.env.COURSE_EXPIRY_DEMO_ROOT ?? '').trim());
+if (dirname(root) !== resolve('.prototype') || !basename(root).startsWith('expiry-rehearsal-')) {
+  throw new Error('请选择第一步输出的独立演练目录。');
+}
+const { id, csr } = JSON.parse(readFileSync(join(root, 'clients', 'alice', 'initial-request.json'), 'utf8'));
+const opensslTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace(/[-:T]/g, '') + 'Z';
+const now = Date.now();
+const pem = saveDatedCertificate(join(root, 'server'), id, csr, opensslTime(now - 60_000), opensslTime(now + 90_000));
+const output = join(root, 'alice-short-lived.crt');
+writeFileSync(output, pem, { flag: 'wx' });
+console.log('公开证书 ' + output);
+console.log('到期时间 ' + new X509Certificate(pem).validToDate.toLocaleString('zh-CN'));
+'@ | node --input-type=module -
+```
+
+4. 回到 Alice 页，等状态变为「已签发」，立即点「持证连接」。证书到期后，应出现「已过期」并自动断开聊天。若打开页面时证书已经到期，可以直接继续下一步。
+5. 在 Alice 页点「重新申请证书」。打开 [演练用证书审批](http://127.0.0.1:18457/#admin)，用第一个终端打印的管理员密码文件登录并签发。Alice 用新证书可重新连接。若要验证加密收发，在 [演练用 Bob](http://127.0.0.1:18460/) 申请、获签并上线，再和 Alice 重新协商。
+6. 在演练用实验台点击「证书在线查验」，选择第三步输出的 `alice-short-lived.crt`，点「查验 PEM 证书」。预期 **实验 CA 签名通过、有效期已过期、登记状态已登记**。在「认证记录」筛选 `certificate_expired`，可看到已连接的证书到期后被断开的记录。
+
+也可在仓库根目录运行下列命令，让测试自动启动隔离的服务端和客户端，检查短期证书到期断线、重新申请、新证书接入和归档跨重启。
+
+```powershell
+node --test app/standalone.test.ts
+```
 
 ## 证书在线查验
 
-在课程应用或独立服务端的「证书审批」登录管理员，然后打开侧栏的「证书在线查验」。可以选择一张已签发或停用的登记证书，也可以粘贴一张 PEM 格式的公开证书。
+在「证书审批」登录管理员，然后打开「证书在线查验」。在登记证书下拉框选一张证书后点「查验登记证书」，或从文件读取和粘贴单张 PEM 公开证书，再点「查验 PEM 证书」。
 
-结果显示实验 CA 签名、有效期和登记状态，并列出主体、序列号、SHA-256 指纹和查验时间。答辩时可以先查一张有效证书，在「证书审批」停用后再查一次，也可以粘贴过期的公开证书，观察有效期和签名分别显示的结果。
+| 对照场景 | 预期结果 |
+| --- | --- |
+| 本实验 CA 签发、在有效期、已登记 | 显示「有效」 |
+| 在有效期内的证书被管理员停用 | CA 签名通过，登记状态「已停用」 |
+| 本实验 CA 签发的证书已过期 | CA 签名通过，有效期「已过期」 |
+
+独立客户端首次持证连接后，可按「证书信息」中的申请编号，在 `.prototype/course-clients/<账号>/<申请编号>.crt` 找到对应的公开证书用于文件查验。短期演练中的公开证书请在该演练的实验台查验。
+
+## 按场次核对和导出认证记录
+
+1. 完成一次签发、协商和加密发送。在实验台「认证记录」的「演示场次」选择「本场已归档记录」，在「筛选记录」输入 `转发密文`，或输入客户端「密钥协商记录」里的会话编号。
+2. 点「下载筛选记录」，打开下载的 `.ndjson` 文件。正常加密消息对应 `message_relayed`，可核对会话编号、密文片段和消息序号。
+3. 在一键启动终端输入 `quit`，用相同运行目录重新启动并登录管理员。从「演示场次」选择上一次启动时间。应能再次看到同一批历史记录。查看刚写入的记录时，可点「刷新场次记录」。
+
+默认视图显示本场最近 80 条实时记录。每次启动在服务端运行目录的 `evidence/` 保存一个独立归档文件，默认路径为 `.prototype/course-server/evidence/`。
 
 ## 双向 TLS 网页原型
 

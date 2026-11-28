@@ -8,9 +8,9 @@ import { isChatUsername } from '../prototype/server.ts';
 import { openClients } from './chat.ts';
 import { openClientWeb } from './client-web.ts';
 import type { ClientAction } from './client-web.ts';
-import type { CertificateRequest } from './store.ts';
+import type { CertificateRequest, CertificateStatus } from './store.ts';
 
-type Certificate = Pick<CertificateRequest, 'id' | 'status' | 'fingerprint' | 'serial'>;
+type Certificate = Pick<CertificateRequest, 'id' | 'fingerprint' | 'serial' | 'expires_at'> & { status: CertificateStatus };
 type ServerState = {
   certificate: Certificate | null;
   chatOrigin?: string;
@@ -22,8 +22,8 @@ type Draft = { id: string; csr: string };
 
 function certificateSummary(certificate: Certificate | null): Certificate | null {
   if (!certificate) return null;
-  const { id, status, serial, fingerprint } = certificate;
-  return { id, status, serial, fingerprint };
+  const { id, status, serial, fingerprint, expires_at } = certificate;
+  return { id, status, serial, fingerprint, expires_at };
 }
 
 class ApiError extends Error {
@@ -194,7 +194,7 @@ async function run() {
   async function perform(command: ClientAction, { peer, text, id }: Record<string, unknown>) {
     if (command === 'request') {
       const { certificate } = await state();
-      if (certificate && certificate.status !== 'revoked') {
+      if (certificate && (certificate.status === 'issued' || certificate.status === 'pending')) {
         if (!existsSync(keyPath(certificate.id))) throw new Error('本地缺少这张证书对应的私钥。');
         reportCertificate(certificate);
       } else {
@@ -206,6 +206,7 @@ async function run() {
     if (command === 'connect') {
       const { certificate } = await state();
       if (!certificate || certificate.status === 'pending') throw new Error('请先申请证书并等待管理员签发。');
+      if (certificate.status === 'expired') throw new Error('证书已过期，请申请新证书。');
       const path = keyPath(certificate.id);
       if (!existsSync(path)) throw new Error('本地缺少这张证书对应的私钥。');
       const pem = await api('certificate');

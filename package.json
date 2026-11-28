@@ -11,6 +11,7 @@
     "pki:status": "node prototype/set-status.ts",
     "start": "node prototype/main.ts",
     "demo": "npm run app",
+    "demo:all": "node app/launch-demo.ts",
     "demo:server": "node app/main.ts --standalone",
     "demo:client": "node app/client.ts",
     "demo:prototype": "node prototype/demo.ts",

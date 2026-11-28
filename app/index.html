@@ -180,6 +180,8 @@
             <button type="submit">查验登记证书</button>
           </form>
           <form id="verify-pem" class="card">
+            <label for="verify-file">从文件读取公开证书（PEM）</label>
+            <input id="verify-file" type="file" accept=".pem,.crt,.cer">
             <label for="verify-input">PEM 公开证书</label>
             <textarea id="verify-input" name="pem" rows="4" maxlength="7500" required spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
             <button type="submit">查验 PEM 证书</button>
@@ -201,9 +203,15 @@
       <header class="view-header"><div><h1 id="evidence-heading">认证记录</h1><p>核对申请签发、TLS 握手、密钥协商帧和密文转发的服务端记录。</p></div></header>
       <div class="card">
         <p id="evidence-locked">请先在<a href="#admin">证书审批</a>登录管理员。</p>
-        <p id="evidence-empty" hidden>生成 CSR 或运行 TLS 对照后，记录会显示在这里。</p>
         <div id="evidence-content" hidden>
           <div class="evidence-toolbar">
+            <label for="evidence-run">演示场次<select id="evidence-run"></select></label>
+            <button id="reload-evidence" class="secondary" type="button" hidden>刷新场次记录</button>
+          </div>
+          <p id="evidence-notice" class="notice" role="status" hidden></p>
+          <p id="evidence-storage" class="notice" role="status" hidden></p>
+          <p id="evidence-empty" class="evidence-count" hidden>此场次暂时没有认证记录。</p>
+          <div class="evidence-toolbar evidence-search">
             <label for="evidence-filter">筛选记录<input id="evidence-filter" type="search" placeholder="账号、申请编号、会话编号或 #连接编号"></label>
             <button id="download-evidence" class="secondary" type="button">下载筛选记录</button>
           </div>

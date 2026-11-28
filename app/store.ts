@@ -23,6 +23,15 @@ export type CertificateRequest = {
   revoked_at: string | null;
 };
 
+type CertificateDates = Pick<CertificateRequest, 'status' | 'expires_at' | 'revoked_at'>;
+export type CertificateStatus = CertificateRequest['status'] | 'expired';
+
+export function certificateStatus(row: CertificateDates, now = Date.now()): CertificateStatus {
+  const end = row.expires_at ? Date.parse(row.expires_at) : NaN;
+  if (row.status !== 'pending' && !row.revoked_at && now >= end) return 'expired';
+  return row.status;
+}
+
 function passwordHash(password: string, salt = randomBytes(16).toString('hex')): string {
   return salt + ':' + scryptSync(password, salt, 64).toString('hex');
 }
@@ -61,6 +70,22 @@ export function openStore(directory: string) {
     "INSERT INTO requests(id, username, status, csr, requested_at) VALUES (?, ?, 'pending', ?, ?) ON CONFLICT DO NOTHING"
   );
   const insertDraft = db.prepare('INSERT INTO drafts.certificate_drafts(id, username, csr, created_at) VALUES (?, ?, ?, ?)');
+  const openRequest = db.prepare("SELECT id, status, expires_at, revoked_at FROM requests WHERE username = ? AND status <> 'revoked'");
+  const usedRequestId = db.prepare('SELECT 1 FROM requests WHERE id = ?');
+  const retireExpired = db.prepare("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'issued'");
+
+  function submit(id: string, username: string, csr: string): boolean {
+    const now = new Date();
+    const previous = openRequest.get(username) as (CertificateDates & { id: string }) | undefined;
+    if (previous && certificateStatus(previous, now.getTime()) !== 'expired') return false;
+    if (usedRequestId.get(id)) return false;
+    // An expired certificate leaves the open slot without a manual revocation timestamp.
+    if (previous) retireExpired.run(previous.id);
+    if (insertRequest.run(id, username, csr, now.toISOString()).changes !== 1) {
+      throw new Error('写入证书申请失败。');
+    }
+    return true;
+  }
 
   function transaction<T>(work: () => T): T {
     db.exec('BEGIN IMMEDIATE');
@@ -111,7 +136,7 @@ export function openStore(directory: string) {
       return db.prepare(requestDetails + ' ORDER BY requests.rowid DESC').all() as CertificateRequest[];
     },
     revokedHistory(username: string) {
-      return db.prepare("SELECT id, serial, revoked_at FROM requests WHERE username = ? AND status = 'revoked' ORDER BY rowid DESC")
+      return db.prepare("SELECT id, serial, revoked_at FROM requests WHERE username = ? AND status = 'revoked' AND revoked_at IS NOT NULL ORDER BY rowid DESC")
         .all(username) as { id: string; serial: string; revoked_at: string }[];
     },
     certificateReference(fingerprint: string) {
@@ -134,11 +159,11 @@ export function openStore(directory: string) {
       return transaction(() => {
         const current = activeDraft.get(draft.username) as CertificateDraft | undefined;
         return current?.id === draft.id &&
-          insertRequest.run(current.id, current.username, current.csr, new Date().toISOString()).changes === 1;
+          submit(current.id, current.username, current.csr);
       });
     },
     submitRequest(id: string, username: string, csr: string): boolean {
-      return insertRequest.run(id, username, csr, new Date().toISOString()).changes === 1;
+      return transaction(() => submit(id, username, csr));
     },
     approve(id: string, issued: { pem: string; fingerprint: string; serial: string; expiresAt: string }): boolean {
       return db.prepare(
@@ -151,10 +176,12 @@ export function openStore(directory: string) {
         .run(new Date().toISOString(), id).changes === 1;
     },
     identity(fingerprint: string): Identity {
-      const request = db.prepare('SELECT username, status FROM requests WHERE fingerprint = ?')
-        .get(fingerprint) as { username: string; status: CertificateRequest['status'] } | undefined;
+      const request = db.prepare('SELECT username, status, expires_at, revoked_at FROM requests WHERE fingerprint = ?')
+        .get(fingerprint) as (CertificateDates & { username: string }) | undefined;
       if (!request || request.status === 'pending') return { error: 'unregistered_certificate', status: 403 };
-      if (request.status === 'revoked') return { error: 'certificate_revoked', status: 403, user: request.username };
+      const status = certificateStatus(request);
+      if (status === 'expired') return { error: 'certificate_expired', status: 403, user: request.username };
+      if (status === 'revoked') return { error: 'certificate_revoked', status: 403, user: request.username };
       return { user: request.username };
     },
   };

@@ -6,17 +6,18 @@ import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request } from 'node:https';
+import { saveDatedCertificate } from './test-certificate.ts';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-function callWeb(url: string, options?: { body: object; origin: string; token?: string }) {
+function callWeb(url: string, options?: { body?: object; origin?: string; token?: string }) {
   return new Promise<{ status: number; text: string }>((resolve, reject) => {
     const outgoing = httpRequest(url, {
-      method: options ? 'POST' : 'GET',
+      method: options?.body === undefined ? 'GET' : 'POST',
       headers: options && {
-        Origin: options.origin, 'Content-Type': 'application/json',
+        ...(options.origin ? { Origin: options.origin, 'Content-Type': 'application/json' } : {}),
         ...(options.token ? { Authorization: 'Bearer ' + options.token } : {}),
       },
     }, async (response) => {
@@ -29,7 +30,7 @@ function callWeb(url: string, options?: { body: object; origin: string; token?: 
     });
     outgoing.on('error', reject);
     outgoing.setTimeout(5000, () => outgoing.destroy(new Error('等待本机接口超时')));
-    outgoing.end(options && JSON.stringify(options.body));
+    outgoing.end(options?.body === undefined ? undefined : JSON.stringify(options.body));
   });
 }
 
@@ -63,7 +64,7 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
       if (line.startsWith('{')) events.push(JSON.parse(line) as Event);
     });
     async function until<T>(read: () => T | undefined, description: string): Promise<T> {
-      for (let attempt = 0; attempt < 100; attempt++) {
+      for (let attempt = 0; attempt < 250; attempt++) {
         const result = read();
         if (result !== undefined) return result;
         if (child.exitCode !== null || child.signalCode !== null) break;
@@ -256,6 +257,8 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   const wrongSignature = await tlsApi('external-request', { id: randomBytes(16).toString('hex'), csr: corruptedCsr }, aliceToken);
   assert.equal(wrongSignature.status, 400);
 
+  const archivedRun = JSON.parse((await callWeb(webOrigin + '/api/state', { token: admin.token })).text).currentEvidenceRun as string;
+  assert.match(archivedRun, /^\d{13}-[a-f0-9]{8}$/);
   const bobBeforeStop = bob.events.length;
   server.child.kill();
   await server.exit;
@@ -265,6 +268,18 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   server = startServer(apiPort);
   webOrigin = (await server.line(/^数字认证课程应用：/)).split('：')[1].replace(/\/$/, '');
   const restartedAdmin = await webApi('login', { username: 'admin', password: administratorPassword });
+  const restartState = JSON.parse((await callWeb(webOrigin + '/api/state', { token: restartedAdmin.token })).text);
+  assert.notEqual(restartState.currentEvidenceRun, archivedRun);
+  assert(restartState.evidenceRuns.some(({ id }: { id: string }) => id === archivedRun));
+  const archiveResponse = await callWeb(webOrigin + '/api/evidence-run/' + archivedRun, { token: restartedAdmin.token });
+  assert.equal(archiveResponse.status, 200);
+  const archived = JSON.parse(archiveResponse.text).events as Event[];
+  assert(archived.some((event) => event.stage === 'message_relayed' && event.sessionId === sessionA.id));
+  assert(archived.some((event) => event.stage === 'certificate_revoked' && event.requestId === requestA.id));
+  assert(!archiveResponse.text.includes('篡改拒收后正常消息仍可解密'));
+  assert.equal((await callWeb(webOrigin + '/api/evidence-run/' + archivedRun)).status, 401);
+  const memberAuth = await webApi('login', { username: 'bob', password: bobPassword.trim() });
+  assert.equal((await callWeb(webOrigin + '/api/evidence-run/' + archivedRun, { token: memberAuth.token })).status, 403);
   bob.command('connect');
   await online(bob, bobBeforeStop);
   const aliceBeforeRetry = alice.events.length;
@@ -300,6 +315,35 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   assert.equal(stillOnline.secure.bob.id, newSession.id);
   await clientApi(aliceOrigin, 'send', { peer: 'bob', text: '旧证书复核后新会话仍可通信' });
   await bob.event((e) => e.event === 'received' && e.text === '旧证书复核后新会话仍可通信', bobBeforeStop);
+
+  const carol = startClient('carol');
+  const carolOrigin = String((await carol.event((e) => e.event === 'client_ready')).webOrigin);
+  await clientApi(carolOrigin, 'request', {});
+  const carolRequest = (await carol.event((e) => e.event === 'certificate')).certificate as { id: string };
+  const carolDraft = JSON.parse(readFileSync(join(clientRoot, 'carol', 'initial-request.json'), 'utf8')) as { csr: string };
+  function opensslTime(time: number) {
+    return new Date(time).toISOString().slice(0, 19).replace(/[-:T]/g, '') + 'Z';
+  }
+  const now = Date.now();
+  saveDatedCertificate(serverDir, carolRequest.id, carolDraft.csr, opensslTime(now - 60_000), opensslTime(now + 6_000));
+  await clientApi(carolOrigin, 'connect', {});
+  await online(carol);
+  await carol.event((e) => e.event === 'connection' && e.phase === 'offline' && String(e.detail).includes('证书已过期'));
+  await server.event((e) => e.stage === 'certificate_expired' && e.user === 'carol');
+  const expired = await clientApi(carolOrigin, 'state');
+  assert.equal(expired.certificate.status, 'expired');
+  assert(!(await clientApi(aliceOrigin, 'state')).peers.includes('carol'));
+  assert.match((await clientApi(carolOrigin, 'connect', {}, carolOrigin, 400)).error, /已过期/);
+  const beforeCarolRenewal = carol.events.length;
+  await clientApi(carolOrigin, 'request', {});
+  const carolRenewed = (await carol.event((e) => e.event === 'certificate', beforeCarolRenewal)).certificate as { id: string; status: string };
+  assert.equal(carolRenewed.status, 'pending');
+  assert.notEqual(carolRenewed.id, carolRequest.id);
+  await webApi('approve', { id: carolRenewed.id }, restartedAdmin.token);
+  await clientApi(carolOrigin, 'connect', {});
+  await online(carol, beforeCarolRenewal);
+  carol.command('quit');
+  assert.equal((await carol.exit)[0], 0);
 
   alice.command('quit');
   bob.command('quit');

@@ -13,7 +13,7 @@ const messageInput = byId('local-message');
 const messages = byId('local-messages');
 const unavailable = byId('client-unavailable');
 const feedback = byId('client-feedback');
-const certificateLabels = { pending: '待审批', issued: '已签发', revoked: '已停用' };
+const certificateLabels = { pending: '待审批', issued: '已签发', revoked: '已停用', expired: '已过期' };
 const connectionLabels = { offline: '离线', connecting: '正在握手', online: '已持证上线', rejected: '接入被拒绝' };
 let current;
 let busy = false;
@@ -124,12 +124,17 @@ function render() {
   byId('client-certificate-details').hidden = !certificate;
   fields(byId('client-certificate-fields'), [
     ['申请编号', certificate?.id], ['序列号', certificate?.serial], ['SHA-256 指纹', certificate?.fingerprint],
+    ['到期时间', certificate?.expires_at && new Date(certificate.expires_at).toLocaleString('zh-CN')],
   ]);
+  const remaining = Date.parse(certificate?.expires_at) - Date.now();
+  const expiresSoon = remaining > 0 && remaining <= 24 * 60 * 60 * 1000;
   byId('certificate-help').textContent = {
-    pending: '请在「证书审批」中签发此申请。', issued: '证书已签发，可以持证连接。',
+    pending: '请在「证书审批」中签发此申请。',
+    issued: expiresSoon ? '证书将在 24 小时内到期。' : '证书已签发，可以持证连接。',
     revoked: '可以用旧证书验证重连拒绝，也可以重新申请。',
+    expired: '证书已过期。重新申请并获签后即可重新连接。',
   }[certificateStatus] ?? '本客户端生成私钥并提交 CSR。';
-  requestButton.textContent = certificateStatus === 'revoked' ? '重新申请证书' : '生成 CSR 并申请';
+  requestButton.textContent = ['revoked', 'expired'].includes(certificateStatus) ? '重新申请证书' : '生成 CSR 并申请';
   requestButton.disabled = busy || !serviceAvailable || certificateStatus === 'pending' || certificateStatus === 'issued';
   renderRevoked(revokedHistory, serviceAvailable);
 
