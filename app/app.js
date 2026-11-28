@@ -63,7 +63,7 @@ function showPage() {
     clientHeading.textContent = clientSlots.get(selectedClient)?.link.textContent ?? '客户端与聊天';
   }
   for (const section of pages) section.hidden = section.id !== page;
-  const activeNav = clientPage ? clientSlots.get(selectedClient)?.link.dataset.nav : page;
+  const activeNav = clientPage && !standalone ? clientSlots.get(selectedClient)?.link.dataset.nav : page;
   for (const link of [...navigation, ...clientLinks.children]) {
     if (link.dataset.nav === activeNav) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -811,6 +811,122 @@ function createCertificateVerification() {
   };
 }
 
+function createLocalClientView(refresh) {
+  const pages = document.querySelector('#standalone-client-pages');
+  const defaultLinks = new Map([...pages.children].map((link) => [link.dataset.username, link]));
+  const signIn = document.querySelector('#local-client-sign-in');
+  const controls = document.querySelector('#local-client-controls');
+  const manual = document.querySelector('#local-client-manual');
+  const form = document.querySelector('#local-client-form');
+  const submit = form.querySelector('button');
+  const notice = document.querySelector('#local-client-notice');
+  const list = document.querySelector('#managed-client-list');
+  const phases = { starting: '启动中', running: '运行中', stopping: '停止中', stopped: '已停止', failed: '启动或运行失败' };
+  const states = { starting: 'pending', running: 'issued', stopping: 'pending', failed: 'revoked' };
+  let token = '';
+  let launchDefaults = false;
+  let marker;
+  let clients = [];
+  let pending = false;
+
+  function linkTo(url, text) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = text;
+    return link;
+  }
+
+  function render(rows, credential, autoStart) {
+    clients = rows;
+    token = credential;
+    launchDefaults = autoStart;
+    signIn.hidden = Boolean(token);
+    controls.hidden = !token;
+    manual.hidden = launchDefaults;
+    submit.disabled = pending;
+    const next = JSON.stringify([rows, Boolean(token), launchDefaults, pending]);
+    if (marker === next) return;
+    marker = next;
+
+    const links = new Map(launchDefaults ? [] : defaultLinks);
+    const items = rows.map((client) => {
+      const { username, url, phase } = client;
+      const item = document.createElement('li');
+      const identity = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = username;
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.dataset.state = states[phase] ?? '';
+      badge.textContent = phases[phase];
+      identity.append(name, badge);
+
+      const details = document.createElement('p');
+      details.className = 'managed-client-details';
+      details.textContent = [url, client.pid ? '进程 ' + client.pid : '',
+        !url && client.port ? '网页端口 ' + client.port : '', client.error].filter(Boolean).join(' · ');
+      details.hidden = !details.textContent;
+      identity.append(details);
+      item.append(identity);
+
+      const actions = document.createElement('div');
+      actions.className = 'buttons';
+      if (url) {
+        links.set(username, linkTo(url, defaultLinks.get(username)?.textContent ?? username + ' 客户端'));
+        actions.append(linkTo(url, '打开网页'));
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.dataset.action = phase === 'running' ? 'stop' : 'start';
+      button.dataset.username = username;
+      button.textContent = phase === 'running' ? '停止' : '启动';
+      button.setAttribute('aria-label', button.textContent + ' ' + username);
+      button.disabled = pending || phase === 'starting' || phase === 'stopping';
+      actions.append(button);
+      item.append(actions);
+      return item;
+    });
+    pages.replaceChildren(...links.values());
+    list.replaceChildren(...items);
+  }
+
+  async function act(body) {
+    const credential = token;
+    if (!credential || pending) return;
+    pending = true;
+    showNotice(notice, body.username + (body.action === 'stop' ? ' 正在停止…' : ' 正在启动…'));
+    render(clients, token, launchDefaults);
+    try {
+      const data = await api('local-clients', { token: credential, body });
+      if (credential !== token) return;
+      render(data.clients, credential, launchDefaults);
+      if (body.action === 'create') form.reset();
+      showNotice(notice, body.username + (body.action === 'stop' ? ' 已停止。' : ' 已启动。'));
+    } catch (error) {
+      showNotice(notice, error.message);
+      await refresh();
+    } finally {
+      pending = false;
+      render(clients, token, launchDefaults);
+    }
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const username = form.elements.username.value.trim().toLowerCase();
+    const port = form.elements.port.valueAsNumber;
+    void act({ action: 'create', username, ...(Number.isNaN(port) ? {} : { port }) });
+  });
+  list.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (button) void act({ action: button.dataset.action, username: button.dataset.username });
+  });
+  return render;
+}
+
 function createAdmin() {
   const login = document.querySelector('#admin-login');
   const content = document.querySelector('#admin-content');
@@ -820,6 +936,7 @@ function createAdmin() {
   const storageKey = 'course-admin';
   const renderVerification = createCertificateVerification();
   const renderEvidenceView = createEvidenceView();
+  const renderLocalClients = standalone ? createLocalClientView(refresh) : null;
   let token = sessionStorage.getItem(storageKey) ?? '';
   let refreshing = false;
 
@@ -839,6 +956,7 @@ function createAdmin() {
     pendingCount.hidden = pending === 0;
     renderEvidenceView(data, data ? token : '');
     renderVerification(data ? token : '', data?.requests ?? []);
+    renderLocalClients?.(data?.localClients ?? [], data ? token : '', data?.launchDefaults ?? false);
     if (!data) {
       list.replaceChildren();
       delete list.dataset.marker;

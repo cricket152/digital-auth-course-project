@@ -269,6 +269,7 @@ async function run() {
   }), (command, body) => serial(() => perform(command, body)));
   record('client_ready', { pid: process.pid, directory, webOrigin: web.origin });
   console.log('客户端网页：' + web.origin + '/');
+  process.send?.({ event: 'client_ready', webOrigin: web.origin });
   const help = 'request 申请证书 | status 查看状态 | connect 持证连接 | negotiate <账号> 协商 | send <账号> <消息> 发送 | disconnect 断开 | quit 退出';
   console.log(help);
   const terminal = createInterface({ input: process.stdin, crlfDelay: Infinity });

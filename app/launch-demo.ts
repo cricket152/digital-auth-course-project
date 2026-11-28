@@ -3,7 +3,7 @@ import { createServer } from 'node:net';
 import { createInterface } from 'node:readline';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
-const children: ChildProcessWithoutNullStreams[] = [];
+let child: ChildProcessWithoutNullStreams | undefined;
 const terminal = createInterface({ input: process.stdin });
 let stopping = false;
 
@@ -14,11 +14,12 @@ function stop(exitCode = 0) {
   terminal.close();
   process.stdin.pause();
   if (!process.stdin.isTTY) process.stdin.destroy();
-  for (const child of children.slice(1)) child.stdin.end();
-  children[0]?.kill();
-  setTimeout(() => {
-    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill();
-  }, 1200).unref();
+  if (child?.exitCode === null && child.signalCode === null) {
+    child.stdin.end('quit\n');
+    setTimeout(() => {
+      if (child?.exitCode === null && child.signalCode === null) child.kill();
+    }, 4500).unref();
+  }
 }
 
 function readPort(name: string, defaultPort: number): number {
@@ -41,7 +42,7 @@ async function checkPort(port: number, label: string) {
 function start(name: string, args: string[], env: NodeJS.ProcessEnv, patterns: RegExp[]) {
   if (stopping) throw new Error('演示已停止。');
   const processChild = spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: 'pipe', windowsHide: true });
-  children.push(processChild);
+  child = processChild;
   const lines = createInterface({ input: processChild.stdout });
   const diagnostics = createInterface({ input: processChild.stderr });
   diagnostics.on('line', (line) => console.error('[' + name + '] ' + line));
@@ -102,16 +103,14 @@ try {
     checkPort(alicePort, 'Alice 网页'), checkPort(bobPort, 'Bob 网页'),
   ]);
   if (!stopping) {
-    const [admin, api] = await start('服务端', ['app/main.ts', '--standalone'], {
+    const [admin, alice, bob] = await start('服务端', ['app/main.ts', '--standalone', '--launch-clients'], {
       COURSE_PORT: String(adminPort), COURSE_API_PORT: String(apiPort),
       COURSE_ALICE_PORT: String(alicePort), COURSE_BOB_PORT: String(bobPort),
-    }, [/^数字认证课程应用：(http:\/\/127\.0\.0\.1:\d+\/)$/, /^独立客户端 HTTPS：https:\/\/127\.0\.0\.1:(\d+)$/]);
-    const ca = process.env.COURSE_CA_FILE ?? (process.env.COURSE_RUNTIME_DIR
-      ? process.env.COURSE_RUNTIME_DIR + '/ca/ca.crt' : undefined);
-    const [[alice], [bob]] = await Promise.all([['alice', alicePort], ['bob', bobPort]].map(([name, port]) =>
-      start(String(name), ['app/client.ts', String(name)], {
-        COURSE_API_PORT: api, COURSE_CLIENT_PORT: String(port), COURSE_CA_FILE: ca,
-      }, [/^客户端网页：(http:\/\/127\.0\.0\.1:\d+\/)$/])));
+    }, [
+      /^数字认证课程应用：(http:\/\/127\.0\.0\.1:\d+\/)$/,
+      /^客户端 alice 网页：(http:\/\/127\.0\.0\.1:\d+\/)$/,
+      /^客户端 bob 网页：(http:\/\/127\.0\.0\.1:\d+\/)$/,
+    ]);
     if (!stopping) {
       console.log('\n三个进程均已就绪。');
       console.log('实验台 ' + admin + '\nAlice ' + alice + '\nBob ' + bob);

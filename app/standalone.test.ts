@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request } from 'node:https';
+import { createServer } from 'node:net';
 import { saveDatedCertificate } from './test-certificate.ts';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -349,4 +350,174 @@ test('独立服务端和两个客户端分别启停、申请证书、加密通�
   bob.command('quit');
   assert.equal((await alice.exit)[0], 0);
   assert.equal((await bob.exit)[0], 0);
+});
+
+
+test('一键演示可新增独立客户端、定向加密聊天并分别启停', { timeout: 40_000 }, async (t) => {
+  const base = resolve('.prototype');
+  mkdirSync(base, { recursive: true });
+  const root = mkdtempSync(join(base, 'managed-clients-test-'));
+  const serverDir = join(root, 'server');
+  const clientRoot = join(root, 'clients');
+  const processes: { stop: () => Promise<unknown> }[] = [];
+  t.after(async () => {
+    await Promise.all(processes.map((instance) => instance.stop()));
+    if (dirname(resolve(root)) === base) rmSync(root, { recursive: true, force: true });
+  });
+
+  async function availablePort() {
+    const server = createServer().listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    server.close();
+    await once(server, 'close');
+    return String(address.port);
+  }
+
+  const [alicePort, bobPort, dianaPort] = await Promise.all([availablePort(), availablePort(), availablePort()]);
+  async function launch() {
+    const child = spawn(process.execPath, ['app/launch-demo.ts'], {
+      env: { ...process.env, COURSE_PORT: '0', COURSE_API_PORT: '0', COURSE_RUNTIME_DIR: serverDir,
+        COURSE_CLIENT_ROOT: clientRoot, COURSE_ALICE_PORT: alicePort, COURSE_BOB_PORT: bobPort },
+      stdio: 'pipe', windowsHide: true,
+    });
+    const exit = once(child, 'close');
+    void exit.catch(() => {});
+    child.stdin.on('error', () => {});
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    async function stop() {
+      if (!child.stdin.writableEnded) child.stdin.end('quit\n');
+      const kill = setTimeout(() => child.kill(), 5000);
+      try { return await exit; } finally { clearTimeout(kill); }
+    }
+    processes.push({ stop });
+    await until(async () => {
+      if (child.exitCode !== null) throw new Error(stderr || stdout);
+      return stdout.includes('三个进程均已就绪。');
+    });
+    const admin = /实验台 (http:\/\/127\.0\.0\.1:\d+)\/\n/.exec(stdout)?.[1];
+    assert(admin);
+    return { admin, stop, logs: () => stdout + stderr };
+  }
+
+  async function until(condition: () => Promise<boolean>) {
+    for (let attempt = 0; attempt < 275; attempt++) {
+      if (await condition()) return;
+      await delay(40);
+    }
+    assert.fail('等待多客户端状态变化超时');
+  }
+
+  let demo = await launch();
+  async function handle(origin: string, route: string, body?: object, token?: string, status = 200) {
+    const response = await callWeb(origin + '/api/' + route, { body, origin, token });
+    assert.equal(response.status, status, route);
+    return JSON.parse(response.text);
+  }
+  async function signIn() {
+    return (await handle(demo.admin, 'login', {
+      username: 'admin', password: readFileSync(join(serverDir, 'admin-password.txt'), 'utf8').trim(),
+    })).token as string;
+  }
+  let token = await signIn();
+  const adminApi = (route: string, body?: object, status = 200) => handle(demo.admin, route, body, token, status);
+  const list = async () => (await adminApi('state')).localClients as {
+    username: string; phase: string; pid?: number; url?: string; port: number | null;
+  }[];
+
+  const create = { action: 'create', username: 'charlie' };
+  await handle(demo.admin, 'local-clients', create, undefined, 401);
+  const member = await handle(demo.admin, 'register', { username: 'viewer', password: randomBytes(18).toString('hex') }, undefined, 201);
+  await handle(demo.admin, 'local-clients', create, member.token, 403);
+  await adminApi('local-clients', { ...create, username: '../escape' }, 400);
+  await adminApi('local-clients', { ...create, port: Number(alicePort) }, 409);
+  await Promise.all([
+    adminApi('local-clients', create),
+    adminApi('local-clients', { ...create, username: 'diana', port: Number(dianaPort) }),
+  ]);
+  await adminApi('local-clients', create, 409);
+  const running = await list();
+  assert.deepEqual(running.map(({ username }) => username).sort(), ['alice', 'bob', 'charlie', 'diana']);
+  assert.equal(new Set(running.map(({ pid }) => pid)).size, 4);
+  assert.equal(new Set(running.map(({ url }) => url)).size, 4);
+  assert(running.every(({ phase }) => phase === 'running'));
+  const client = async (username: string, route: string, body?: object) => {
+    const row = (await list()).find((item) => item.username === username);
+    assert(row?.url);
+    return handle(new URL(row.url).origin, route, body);
+  };
+  const ids = new Map<string, string>();
+  const keys = await Promise.all(running.map(async ({ username, url }) => {
+    assert(url);
+    assert.match((await callWeb(url)).text, /协商会话密钥/);
+    assert.equal((await client(username, 'state')).username, username);
+    await client(username, 'request', {});
+    const { id } = (await client(username, 'state')).certificate;
+    ids.set(username, id);
+    await adminApi('approve', { id });
+    await client(username, 'connect', {});
+    const folder = join(clientRoot, username);
+    const cert = new X509Certificate(readFileSync(join(folder, id + '.crt')));
+    assert(cert.checkPrivateKey(createPrivateKey(readFileSync(join(folder, id + '.key')))));
+    return cert.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  }));
+  assert.equal(new Set(keys).size, 4);
+  await until(async () => (await client('charlie', 'state')).peers.length === 3);
+
+  await client('charlie', 'negotiate', { peer: 'alice' });
+  await client('charlie', 'negotiate', { peer: 'diana' });
+  await until(async () => {
+    const state = await client('charlie', 'state');
+    return state.chat.secure.alice?.phase === 'ready' && state.chat.secure.diana?.phase === 'ready';
+  });
+  const sessions = (await client('charlie', 'state')).chat.secure;
+  assert.notEqual(sessions.alice.id, sessions.diana.id);
+  assert.equal(sessions.diana.transcript, (await client('diana', 'state')).chat.secure.charlie.transcript);
+  const message = '仅发送给 Diana 的独立客户端演示消息';
+  const reply = 'Diana 的加密回复';
+  await client('charlie', 'send', { peer: 'diana', text: message });
+  await client('diana', 'send', { peer: 'charlie', text: reply });
+  const received = async (username: string, expected: string) =>
+    (await client(username, 'state')).chat.messages.some((entry: { text: string }) => entry.text === expected);
+  await until(async () => await received('diana', message) && await received('charlie', reply));
+  assert.equal(await received('alice', message), false);
+  assert.equal(await received('bob', message), false);
+  assert(!demo.logs().includes(message));
+  assert(!demo.logs().includes(reply));
+
+  const before = running.find(({ username }) => username === 'charlie');
+  assert(before?.url);
+  await adminApi('local-clients', { action: 'stop', username: 'charlie' });
+  await assert.rejects(callWeb(before.url));
+  assert.equal((await client('diana', 'state')).chat.phase, 'online');
+  await adminApi('local-clients', { action: 'start', username: 'charlie' });
+  assert.equal((await list()).find(({ username }) => username === 'charlie')?.url, before.url);
+  assert.equal((await client('charlie', 'state')).certificate.id, ids.get('charlie'));
+  await client('charlie', 'connect', {});
+  await until(async () => (await client('charlie', 'state')).chat.phase === 'online');
+  await adminApi('revoke', { id: ids.get('charlie') });
+  await until(async () => (await client('charlie', 'state')).chat.phase === 'offline');
+  await client('charlie', 'connect', {});
+  await until(async () => (await client('charlie', 'state')).chat.phase === 'rejected');
+  assert.match((await client('charlie', 'state')).chat.detail, /HTTP 403/);
+
+  const urls = (await list()).map(({ url }) => url);
+  assert.deepEqual(await demo.stop(), [0, null]);
+  for (const url of urls) {
+    assert(url);
+    await assert.rejects(callWeb(url));
+  }
+  demo = await launch();
+  token = await signIn();
+  const saved = (await list()).filter(({ username }) => username === 'charlie' || username === 'diana');
+  assert.deepEqual(saved.sort((a, b) => a.username.localeCompare(b.username)).map(({ username, phase, port }) => [username, phase, port]), [
+    ['charlie', 'stopped', before.port], ['diana', 'stopped', Number(dianaPort)],
+  ]);
+  await adminApi('local-clients', { action: 'start', username: 'diana' });
+  assert.equal((await client('diana', 'state')).certificate.id, ids.get('diana'));
+  assert.deepEqual(await demo.stop(), [0, null]);
 });

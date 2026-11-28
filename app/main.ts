@@ -5,11 +5,13 @@ import { createServer as createHttpsServer } from 'node:https';
 import type { TLSSocket } from 'node:tls';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { createChatServer, isChatUsername } from '../prototype/server.ts';
 import type { ChatEvidence } from '../prototype/server.ts';
 import { openClients } from './chat.ts';
 import { openPki } from './pki.ts';
 import { openEvidenceArchive } from './evidence-archive.ts';
+import { isLocalClientName, isLocalClientPort, openLocalClients } from './local-clients.ts';
 import { certificateStatus, openStore } from './store.ts';
 import type { Account, CertificateRequest } from './store.ts';
 import { createComparison, describeTlsSession, listenLocal } from './tls-comparison.ts';
@@ -53,6 +55,7 @@ function visibleRequest(row?: CertificateRequest) {
 
 const host = '127.0.0.1';
 const standalone = process.argv.includes('--standalone');
+const launchDefaults = standalone && process.argv.includes('--launch-clients');
 function localPort(value: string | number, name: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(name + ' 必须是有效端口。');
@@ -103,6 +106,7 @@ const { server: mutualServer, disconnectCertificate, onlineUsers } =
 const mutualOrigin = await listenLocal(mutualServer);
 const clients = standalone ? undefined : openClients(mutualOrigin, pki.ca, pki.clientKey);
 let secureOrigin: URL | undefined;
+let localClients: ReturnType<typeof openLocalClients> | undefined;
 let compare: Awaited<ReturnType<typeof createComparison>>;
 const sessions = new Map<string, { account: Account; expires: number }>();
 
@@ -265,7 +269,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     if (route === '/api/state') {
       const state = account.role === 'admin'
         ? { account, requests: store.list().map(visibleRequest), evidence,
-            evidenceRuns: archive.runs, currentEvidenceRun: archive.id, archiveAvailable: archive.available }
+            evidenceRuns: archive.runs, currentEvidenceRun: archive.id, archiveAvailable: archive.available,
+            ...(localClients ? { localClients: localClients.list(), launchDefaults } : {}) }
         : {
             account, certificate: visibleRequest(store.current(account.username)), draft: store.draft(account.username) ?? null,
             chat: clients?.state(account.username) ?? { phase: 'offline', detail: '请使用独立客户端终端。', messages: [], secure: {} },
@@ -325,6 +330,26 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, rou
     return;
   }
   const account = requireAccount(request);
+  if (route === '/api/local-clients') {
+    if (account.role !== 'admin') throw new HttpError(403, '只有管理员可以管理客户端进程。');
+    if (!localClients) throw new HttpError(404, '请启动独立服务端。');
+    const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+    if (!isLocalClientName(username)) throw new HttpError(400, '账号需使用 3–24 位英文字母、数字或下划线，且不能用 admin。');
+    const { action, port } = body;
+    if (action !== 'create' && action !== 'start' && action !== 'stop') throw new HttpError(400, '未知的客户端操作。');
+    if (port !== undefined && (action !== 'create' || !isLocalClientPort(port))) {
+      throw new HttpError(400, '网页端口应为 1024–65535，留空时自动分配。');
+    }
+    try {
+      if (action === 'create') localClients.add(username, port as number | undefined);
+      if (action === 'stop') await localClients.stop(username);
+      else await localClients.start(username);
+    } catch (error) {
+      throw new HttpError(409, (error as Error).message);
+    }
+    reply(response, 200, { clients: localClients.list() });
+    return;
+  }
   if (route === '/api/verify-certificate') {
     reply(response, 200, verifyCertificate(account, body));
     return;
@@ -400,6 +425,11 @@ function serveWeb(request: IncomingMessage, response: ServerResponse): void {
 
 const secureWeb = createHttpsServer({ ...pki.server, requestCert: false, minVersion: 'TLSv1.2' }, serveWeb);
 secureOrigin = new URL(await listenLocal(secureWeb, apiPort));
+if (standalone) {
+  localClients = openLocalClients(runtime, secureOrigin.port, process.env.COURSE_CA_FILE ?? resolve(pki.directory, 'ca.crt'), [
+    { username: 'alice', port: alicePort || 18450 }, { username: 'bob', port: bobPort || 18451 },
+  ]);
+}
 compare = await createComparison(pki, mutualOrigin, secureOrigin.origin);
 const web = createServer(serveWeb);
 web.listen(port, host, () => {
@@ -413,10 +443,26 @@ web.listen(port, host, () => {
     console.log('聊天中转 WSS：' + mutualOrigin.replace('https:', 'wss:') + '/chat');
     console.log('实验 CA 公共证书：' + resolve(pki.directory, 'ca.crt'));
   }
+  if (launchDefaults && localClients) {
+    const input = createInterface({ input: process.stdin });
+    input.on('line', (line) => { if (line.trim().toLowerCase() === 'quit') void shutdown(); });
+    input.once('close', () => { void shutdown(); });
+    void Promise.all([localClients.start('alice'), localClients.start('bob')]).catch((error) => {
+      if (!shuttingDown) {
+        console.error((error as Error).message);
+        void shutdown(1);
+      }
+    });
+  }
 });
+let shuttingDown = false;
+async function shutdown(code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await localClients?.shutdown();
+  store.close();
+  process.exit(code);
+}
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => {
-    store.close();
-    process.exit(0);
-  });
+  process.once(signal, () => { void shutdown(); });
 }

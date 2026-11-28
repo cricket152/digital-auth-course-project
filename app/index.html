@@ -23,9 +23,12 @@
             <button id="add-client" class="secondary" type="button">＋ 添加客户端</button>
           </div>
           <div id="client-links" class="client-links"></div>
-          <div id="standalone-links" class="client-links" hidden>
-            <a href="http://127.0.0.1:18450/" target="_blank" rel="noopener">Alice 客户端</a>
-            <a href="http://127.0.0.1:18451/" target="_blank" rel="noopener">Bob 客户端</a>
+          <div id="standalone-links" hidden>
+            <a href="#clients" data-nav="clients">管理客户端</a>
+            <div id="standalone-client-pages" class="client-links">
+              <a data-username="alice" href="http://127.0.0.1:18450/" target="_blank" rel="noopener">Alice 客户端</a>
+              <a data-username="bob" href="http://127.0.0.1:18451/" target="_blank" rel="noopener">Bob 客户端</a>
+            </div>
           </div>
         </section>
       </nav>
@@ -53,8 +56,24 @@
         </header>
         <p id="empty-clients" class="card" hidden>当前没有客户端，点击侧栏的「添加客户端」开始。</p>
         <div id="standalone-clients" class="card" hidden>
-          <p>从侧栏打开 Alice、Bob 的本机网页。每个页面由对应客户端进程提供。</p>
-          <p>如果页面暂未打开，请先启动对应客户端，并使用终端打印的网页地址。</p>
+          <p>每个客户端有独立网页和运行目录。停止客户端后，可以重新启动并继续使用该账号的证书。</p>
+          <p id="local-client-sign-in"><a href="#admin">登录管理员</a>后可添加、启动和停止客户端。在终端单独启动的客户端请使用终端给出的网页地址。</p>
+          <div id="local-client-controls" hidden>
+            <form id="local-client-form" class="admin-form">
+              <label>客户端账号
+                <input name="username" placeholder="例如 charlie" required minlength="3" maxlength="24"
+                       pattern="[A-Za-z0-9][A-Za-z0-9_]{2,23}" autocomplete="off" spellcheck="false">
+              </label>
+              <label>网页端口（可选）
+                <input name="port" type="number" min="1024" max="65535" placeholder="自动分配">
+              </label>
+              <button type="submit">添加客户端</button>
+              <p>账号使用 3–24 位英文字母、数字或下划线，首位为字母或数字。</p>
+            </form>
+            <p id="local-client-notice" class="notice" role="status" hidden></p>
+            <ul id="managed-client-list" aria-label="客户端进程"></ul>
+            <p id="local-client-manual" hidden>从终端单独启动的客户端由对应终端管理，网页地址见终端输出。</p>
+          </div>
         </div>
         <div id="members"></div>
       </section>
